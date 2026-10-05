@@ -17,12 +17,12 @@ import (
 )
 
 const (
-	AuthTypeEAPAKA      = "EAP-AKA"
-	ActionGetAuth       = "getAuthentication"
+	AuthTypeEAPAKA       = "EAP-AKA"
+	ActionGetAuth        = "getAuthentication"
 	ActionGetEntitlement = "getEntitlement"
-	ActionPostChallenge = "postChallenge"
-	EntitlementVoWiFi   = "VoWiFi"
-	ProtocolVersion     = "2"
+	ActionPostChallenge  = "postChallenge"
+	EntitlementVoWiFi    = "VoWiFi"
+	ProtocolVersion      = "2"
 
 	// MaxChallengeRounds 是 challenge 循环上限（防无限循环，门禁👁）。
 	MaxChallengeRounds = 5
@@ -55,11 +55,11 @@ type EntitlementRequest struct {
 
 // EntitlementResponse 是服务端响应。
 type EntitlementResponse struct {
-	Status        string `json:"status"`
-	Challenge     string `json:"challenge,omitempty"`
-	Token         string `json:"token,omitempty"`
-	WebsheetURL   string `json:"websheet-url,omitempty"`
-	Entitlement   string `json:"entitlement-status,omitempty"`
+	Status      string `json:"status"`
+	Challenge   string `json:"challenge,omitempty"`
+	Token       string `json:"token,omitempty"`
+	WebsheetURL string `json:"websheet-url,omitempty"`
+	Entitlement string `json:"entitlement-status,omitempty"`
 }
 
 // Client 是 entitlement 客户端。
