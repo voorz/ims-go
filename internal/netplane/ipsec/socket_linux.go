@@ -143,6 +143,14 @@ func (r *SocketManager) sendNetEvent(ev NetEvent) {
 // soReusePort is SO_REUSEPORT on Linux (not exposed by the syscall package).
 const soReusePort = 15
 
+// setSocketReuseOptions 设置 SO_REUSEADDR/SO_REUSEPORT（平台相关实现）。
+func setSocketReuseOptions(fd uintptr) error {
+	if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		return err
+	}
+	return syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, soReusePort, 1)
+}
+
 // soBindToDevice is SO_BINDTODEVICE on Linux.
 const soBindToDevice = syscall.SO_BINDTODEVICE
 

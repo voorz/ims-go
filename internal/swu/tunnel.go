@@ -146,3 +146,16 @@ func (t *Tunnel) TriggerMOBIKE(newLocal, newRemote string) error {
 	}
 	return s.UpdateAddresses(newLocal, newRemote)
 }
+
+// InnerPacketIO 返回用户态包边界，供 gVisor netstack 挂载（D-013）。
+// 返回接口的方法集与 netstack.PacketIO 一致，可直接传入 netstack.NewTunnelNetwork。
+// 隧道未启动或非 userspace 模式时返回 nil。
+func (t *Tunnel) InnerPacketIO() InnerPacketIO {
+	t.mu.Lock()
+	s := t.session
+	t.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	return s.InnerPacketIO()
+}

@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package ipsec
 
@@ -34,8 +34,16 @@ func ParseSockExtError(b []byte) (*SockExtendedErr, error) {
 	return nil, errors.New("extended socket errors are not supported on this platform")
 }
 
-// soReusePort is SO_REUSEPORT on non-Linux platforms.
+// soReusePort is SO_REUSEPORT on non-Linux Unix platforms.
 const soReusePort = syscall.SO_REUSEPORT
+
+// setSocketReuseOptions 设置 SO_REUSEADDR/SO_REUSEPORT（平台相关实现）。
+func setSocketReuseOptions(fd uintptr) error {
+	if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		return err
+	}
+	return syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, soReusePort, 1)
+}
 
 // setSockBindToDevice is a no-op on non-Linux platforms (SO_BINDTODEVICE is Linux-only).
 func setSockBindToDevice(fd int, device string) error {

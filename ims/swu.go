@@ -40,6 +40,7 @@ func newDefaultTunnel(cfg Config) (Module, error) {
 	if len(cfg.SWu.EPDGAddrs) > 0 {
 		sc.EPDGAddr = cfg.SWu.EPDGAddrs[0]
 	}
+	sc.DataplaneMode = string(cfg.Dataplane.Mode)
 
 	// AKA：优先消费方注入的硬件 provider，其次软 SIM（D-015）。
 	switch {
