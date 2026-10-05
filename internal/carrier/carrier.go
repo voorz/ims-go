@@ -13,8 +13,8 @@ import (
 
 // CarrierConfig 是统一运营商档案。
 type CarrierConfig struct {
-	MCC string `json:"mcc"`
-	MNC string `json:"mnc"`
+	MCC  string `json:"mcc"`
+	MNC  string `json:"mnc"`
 	Name string `json:"name"`
 
 	// EPDG 是 ePDG 地址（普通流程永不选紧急 ePDG）。
@@ -32,11 +32,11 @@ type CarrierConfig struct {
 
 // IMSTemplate 是 IMS 注册模板。
 type IMSTemplate struct {
-	Expires             int    `json:"expires"`
-	ContactMode         string `json:"contact_mode"`
-	AccessType          string `json:"access_type"`
-	ICSIRef             string `json:"icsi_ref"`
-	UseDigestPlaceholder bool  `json:"use_digest_placeholder"`
+	Expires              int    `json:"expires"`
+	ContactMode          string `json:"contact_mode"`
+	AccessType           string `json:"access_type"`
+	ICSIRef              string `json:"icsi_ref"`
+	UseDigestPlaceholder bool   `json:"use_digest_placeholder"`
 }
 
 // E911Policy 是紧急地址策略。
@@ -48,10 +48,10 @@ type E911Policy struct {
 
 // LearnedProfile 是已学习的运营商档案（P1）。
 type LearnedProfile struct {
-	Key       string         `json:"key"` // MCC/MNC+SPN/GID
-	Config    CarrierConfig  `json:"config"`
-	Version   int            `json:"version"`
-	ExpiresAt int64          `json:"expires_at"` // unix 时间
+	Key       string        `json:"key"` // MCC/MNC+SPN/GID
+	Config    CarrierConfig `json:"config"`
+	Version   int           `json:"version"`
+	ExpiresAt int64         `json:"expires_at"` // unix 时间
 }
 
 // LearnedProfileStore 是 learned-profile 存储接口（消费方实现持久化）。
@@ -64,11 +64,11 @@ type LearnedProfileStore interface {
 
 // Resolver 解析有效运营商配置。
 type Resolver struct {
-	log    *slog.Logger
-	mu     sync.RWMutex
-	presets map[string]CarrierConfig // key: MCC+MNC
+	log       *slog.Logger
+	mu        sync.RWMutex
+	presets   map[string]CarrierConfig // key: MCC+MNC
 	overrides map[string]CarrierConfig
-	store  LearnedProfileStore
+	store     LearnedProfileStore
 }
 
 // NewResolver 创建解析器。
@@ -92,17 +92,17 @@ func (r *Resolver) loadPresets() {
 	presets := []CarrierConfig{
 		{
 			MCC: "310", MNC: "260", Name: "T-Mobile US",
-			EPDG: "epdg.epc.mnc260.mcc310.pub.3gppnetwork.org",
+			EPDG:        "epdg.epc.mnc260.mcc310.pub.3gppnetwork.org",
 			IMSTemplate: IMSTemplate{Expires: 600, AccessType: "IEEE-802.11", ICSIRef: "urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"},
 		},
 		{
 			MCC: "234", MNC: "10", Name: "O2 UK",
-			EPDG: "epdg.epc.mnc010.mcc234.pub.3gppnetwork.org",
+			EPDG:        "epdg.epc.mnc010.mcc234.pub.3gppnetwork.org",
 			IMSTemplate: IMSTemplate{Expires: 600, AccessType: "IEEE-802.11"},
 		},
 		{
 			MCC: "460", MNC: "00", Name: "China Mobile",
-			EPDG: "epdg.epc.mnc000.mcc460.pub.3gppnetwork.org",
+			EPDG:        "epdg.epc.mnc000.mcc460.pub.3gppnetwork.org",
 			IMSTemplate: IMSTemplate{Expires: 600, AccessType: "IEEE-802.11"},
 		},
 	}
