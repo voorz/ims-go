@@ -38,5 +38,8 @@ func (c Config) Validate() error {
 	if c.Recovery.MaxBackoff < c.Recovery.InitialBackoff {
 		return &ConfigError{Field: "Recovery.MaxBackoff", Reason: "不能小于 InitialBackoff"}
 	}
+	if c.SIM.SoftSIM.Enable && !c.SIM.SoftSIM.Keys.Valid() {
+		return &ConfigError{Field: "SIM.SoftSIM.Keys", Reason: "启用软 SIM 需要有效的测试密钥（sim.TestKeys / sim.CustomTestKeys）"}
+	}
 	return nil
 }

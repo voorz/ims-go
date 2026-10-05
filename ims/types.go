@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/voorz/ims-go/internal/sim"
 )
 
 // ==================== Config ====================
@@ -25,15 +27,19 @@ type Config struct {
 	Modules   Modules
 }
 
-// SIMConfig：SIM/AKA 相关配置。AKAProvider（硬件 SIM）由消费方注入，WS-2 细化。
+// SIMConfig：SIM/AKA 相关配置。
 type SIMConfig struct {
-	SoftSIM SoftSIMConfig
+	// AKAProvider 由消费方注入（硬件 SIM 经 APDU/QMI 调制解调器，D-010）。
+	AKAProvider sim.AKAProvider
+	SoftSIM     SoftSIMConfig
 }
 
 // SoftSIMConfig：软 SIM（milenage）开关（D-015）。
 type SoftSIMConfig struct {
-	// Enable 默认 false；启用后仅允许 3GPP 测试钥进入软件侧，生产钥由 lint 门禁拦截。
+	// Enable 默认 false；启用后仅允许测试密钥（sim.TestKeys / sim.CustomTestKeys）。
 	Enable bool
+	// Keys 测试密钥；Enable 时必须有效。
+	Keys sim.MilenageKeys
 }
 
 // SWuConfig：SWu/IKEv2 隧道配置。WS-3 细化（ePDG 地址、重传定时器等）。
