@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - name: 机器门禁（P5）
+        run: ./scripts/gates.sh
+      - name: 构建
+        run: go build ./...
+      - name: 测试（含竞态检测）
+        run: go test -race -count=1 ./...
