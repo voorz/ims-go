@@ -5,21 +5,6 @@ import (
 	"strings"
 )
 
-// Redactor 是脱敏器（规则可注入，整改 go 写死正则）。
-type Redactor struct {
-	rules []RedactRule
-}
-
-// RedactRule 是一条脱敏规则。
-type RedactRule struct {
-	// Name 是规则名（诊断用）。
-	Name string
-	// Pattern 是匹配模式。
-	Pattern *regexp.Regexp
-	// Replace 是替换模板（可用 $1 等分组）。
-	Replace string
-}
-
 // NewRedactor 创建脱敏器（内置默认规则）。
 func NewRedactor(extra ...RedactRule) *Redactor {
 	rules := []RedactRule{

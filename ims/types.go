@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -286,3 +287,20 @@ var (
 	ErrNoUSSDModule   = errors.New("ims: USSD 模块未配置")
 	ErrNoVoiceModule  = errors.New("ims: 语音模块未配置")
 )
+
+// ==================== Redaction ====================
+
+// Redactor 是脱敏器（规则可注入，整改 go 写死正则）。
+type Redactor struct {
+	rules []RedactRule
+}
+
+// RedactRule 是一条脱敏规则。
+type RedactRule struct {
+	// Name 是规则名（诊断用）。
+	Name string
+	// Pattern 是匹配模式。
+	Pattern *regexp.Regexp
+	// Replace 是替换模板（可用 $1 等分组）。
+	Replace string
+}
