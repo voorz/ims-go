@@ -42,6 +42,8 @@ gate2() {
 }
 
 # ③ 导出类型定义只允许出现在 types.go / runtime_types.go（红线#9/P4）
+# 仅适用于新写的包；收拢的第三方代码（internal/swu/*、internal/netplane/*、
+# internal/dns）保持原结构以便与上游对应，不强制重组。
 gate3() {
   local hits=""
   while IFS= read -r f; do
@@ -51,7 +53,7 @@ gate3() {
     local m
     m=$(grep -n '^type [A-Z]' "$f" || true)
     if [ -n "$m" ]; then hits+="${f}:\n${m}\n"; fi
-  done < <(find $SRC_DIRS -name '*.go')
+  done < <(find ims internal/sim -name '*.go')
   if [ -n "$hits" ]; then printf '%b' "$hits"; return 1; fi
 }
 

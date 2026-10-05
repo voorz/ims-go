@@ -1,0 +1,200 @@
+package swu
+
+import (
+	"bytes"
+	"crypto/rand"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/voorz/ims-go/internal/swu/crypto"
+	"github.com/voorz/ims-go/internal/swu/ikev2"
+)
+
+// buildInitResp constructs a synthetic IKE_SA_INIT response from a "responder"
+// DH instance, encodes and re-decodes it so the payloads reach the handler as
+// RawPayloads (as they would over the wire).
+func buildInitResp(t *testing.T, initiator *Session, responderDH *crypto.DiffieHellman, extraPayloads ...ikev2.Payload) *ikev2.IKEPacket {
+	t.Helper()
+	if err := responderDH.GenerateKey(); err != nil {
+		t.Fatalf("responder GenerateKey: %v", err)
+	}
+	nr := make([]byte, 32)
+	rand.Read(nr)
+	var spir [8]byte
+	rand.Read(spir[:])
+
+	pkt := &ikev2.IKEPacket{
+		InitiatorSPI: initiator.spiI,
+		ResponderSPI: spir,
+		Version:      0x20,
+		ExchangeType: ikev2.ExchangeIKEInit,
+		Flags:        0x20, // Responder
+		MessageID:    0,
+		Payloads: append([]ikev2.Payload{
+			&ikev2.EncryptedPayloadSA{Proposals: buildIKEProposalsForSession(initiator)},
+			&ikev2.EncryptedPayloadKE{DHGroupNum: initiator.dhGroup, KeyData: responderDH.PublicKeyBytes()},
+			&ikev2.EncryptedPayloadNonce{Data: nr},
+		}, extraPayloads...),
+	}
+	raw, err := pkt.Encode()
+	if err != nil {
+		t.Fatalf("Encode(response): %v", err)
+	}
+	dec, err := ikev2.DecodePacket(raw)
+	if err != nil {
+		t.Fatalf("DecodePacket(response): %v", err)
+	}
+	return dec
+}
+
+func encodeInitPacket(t *testing.T, packet *ikev2.IKEPacket) []byte {
+	t.Helper()
+	raw, err := packet.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestHandleIKESAInitRespRejectsWrongAESKeyLength(t *testing.T) {
+	init := NewSession(&Config{
+		IKEEncryption: crypto.EncrAESCBC, IKEEncryptionKeyBits: 256,
+		IKEPRF: 7, IKEIntegrity: 14, IKEDH: 14,
+		ESPEncryption: crypto.EncrAESCBC, ESPEncryptionKeyBits: 256, ESPIntegrity: 14,
+	})
+	if _, err := init.buildIKESAInitPacket(); err != nil {
+		t.Fatal(err)
+	}
+	respDH, _ := crypto.NewDiffieHellman(14)
+	resp := buildInitResp(t, init, respDH)
+	sa := resp.Payloads[0].(*ikev2.EncryptedPayloadSA)
+	sa.Proposals[0].Transforms[0].Attributes[0].Val = 128
+	err := init.handleIKESAInitResp(encodeInitPacket(t, resp))
+	if err == nil || !strings.Contains(err.Error(), "unoffered") {
+		t.Fatalf("handleIKESAInitResp() error = %v", err)
+	}
+}
+
+func TestHandleIKESAInitRespDerivesKeys(t *testing.T) {
+	init := newInitSession(t)
+	if _, err := init.buildIKESAInitPacket(); err != nil {
+		t.Fatalf("buildIKESAInitPacket: %v", err)
+	}
+
+	respDH, err := crypto.NewDiffieHellman(14)
+	if err != nil {
+		t.Fatalf("responder DH: %v", err)
+	}
+	resp := buildInitResp(t, init, respDH)
+
+	if err := init.handleIKESAInitResp(encodeInitPacket(t, resp)); err != nil {
+		t.Fatalf("handleIKESAInitResp: %v", err)
+	}
+	if init.spiR == ([8]byte{}) {
+		t.Error("SPIr not recorded")
+	}
+	if init.ikeKeys == nil {
+		t.Fatal("IKE keys not derived")
+	}
+
+	// The initiator's shared secret must match what the responder computes
+	// from the initiator's public key.
+	responderShared, err := respDH.ComputeSharedSecret(init.dh.PublicKeyBytes())
+	if err != nil {
+		t.Fatalf("responder shared: %v", err)
+	}
+	if !bytes.Equal(init.dhSharedSecret, responderShared) {
+		t.Error("DH shared secrets differ between initiator and responder")
+	}
+	// SKEYSEED must be prf(Ni|Nr, g^ir) on both sides — recompute with the
+	// responder's view to confirm.
+	nr := resp.Payloads[2].(*ikev2.EncryptedPayloadNonce).NonceData
+	key := append(append([]byte{}, init.Ni...), nr...)
+	want := init.prf.Compute(key, responderShared)
+	if !bytes.Equal(init.ikeKeys.SKEYSEED, want) {
+		t.Error("SKEYSEED mismatch against responder-computed shared secret")
+	}
+}
+
+func TestHandleIKESAInitRespInvalidKE(t *testing.T) {
+	init := newInitSession(t)
+	if _, err := init.buildIKESAInitPacket(); err != nil {
+		t.Fatal(err)
+	}
+	respDH, _ := crypto.NewDiffieHellman(14)
+	// INVALID_KE_PAYLOAD notify carrying DH group 21.
+	notify := &ikev2.EncryptedPayloadNotify{ProtocolID: ikev2.ProtoIKE, NotifyType: notifyInvalidKE, NotifyData: []byte{0, 21}}
+	resp := buildInitResp(t, init, respDH, notify)
+	err := init.handleIKESAInitResp(encodeInitPacket(t, resp))
+	var keErr *ErrInvalidKEGroup
+	if !errors.As(err, &keErr) || keErr.PreferredGroup != 21 {
+		t.Fatalf("err = %v, want ErrInvalidKEGroup{21}", err)
+	}
+}
+
+func TestHandleIKESAInitRespCookie(t *testing.T) {
+	init := newInitSession(t)
+	init.buildIKESAInitPacket()
+	respDH, _ := crypto.NewDiffieHellman(14)
+	cookie := []byte{0xde, 0xad, 0xbe, 0xef}
+	notify := &ikev2.EncryptedPayloadNotify{ProtocolID: ikev2.ProtoIKE, NotifyType: notifyCookie, NotifyData: cookie}
+	resp := buildInitResp(t, init, respDH, notify)
+	if err := init.handleIKESAInitResp(encodeInitPacket(t, resp)); !errors.Is(err, errCookieRequired) {
+		t.Fatalf("err = %v, want errCookieRequired", err)
+	}
+	if !bytes.Equal(init.cookie, cookie) {
+		t.Error("cookie not stored from COOKIE notify")
+	}
+	// The next IKE_SA_INIT must carry the cookie.
+	raw, err := init.buildIKESAInitPacket()
+	if err != nil {
+		t.Fatalf("resend build: %v", err)
+	}
+	pkt, err := ikev2.DecodePacket(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hasCookie bool
+	for _, pl := range pkt.Payloads {
+		if n, ok := pl.(*ikev2.EncryptedPayloadNotify); ok && n.NotifyType == notifyCookie {
+			hasCookie = true
+		}
+	}
+	if !hasCookie {
+		t.Error("resend IKE_SA_INIT does not carry the COOKIE notify")
+	}
+}
+
+func TestHandleIKESAInitRespRedirect(t *testing.T) {
+	init := newInitSession(t)
+	init.buildIKESAInitPacket()
+	respDH, _ := crypto.NewDiffieHellman(14)
+	// REDIRECTED_TO with an FQDN gateway.
+	notify := &ikev2.EncryptedPayloadNotify{ProtocolID: ikev2.ProtoIKE, NotifyType: notifyRedirectedTo, NotifyData: []byte{3, 'e', 'p', 'd', 'g', '.', 'x'}}
+	resp := buildInitResp(t, init, respDH, notify)
+	err := init.handleIKESAInitResp(encodeInitPacket(t, resp))
+	var redir *RedirectError
+	if !errors.As(err, &redir) || redir.NewAddr != "epdg.x" {
+		t.Fatalf("err = %v, want RedirectError{epdg.x}", err)
+	}
+}
+
+func TestHandleIKESAInitRespMissingKE(t *testing.T) {
+	init := newInitSession(t)
+	init.buildIKESAInitPacket()
+	// Build a response without a KE payload.
+	pkt := &ikev2.IKEPacket{
+		InitiatorSPI: init.spiI, Version: 0x20, ExchangeType: ikev2.ExchangeIKEInit, Flags: 0x20,
+		Payloads: []ikev2.Payload{
+			&ikev2.EncryptedPayloadNonce{Data: bytes.Repeat([]byte{1}, 32)},
+		},
+	}
+	raw, err := pkt.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := init.handleIKESAInitResp(raw); err == nil {
+		t.Error("missing KE payload should error")
+	}
+}

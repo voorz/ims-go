@@ -42,8 +42,33 @@ type SoftSIMConfig struct {
 	Keys sim.MilenageKeys
 }
 
-// SWuConfig：SWu/IKEv2 隧道配置。WS-3 细化（ePDG 地址、重传定时器等）。
-type SWuConfig struct{}
+// SWuConfig：SWu/IKEv2 隧道配置（WS-3 收敛后的公开子集）。
+// 内部完整配置见 internal/swu.Config；映射集中在 ims/swu.go（单处，D-007）。
+type SWuConfig struct {
+	// EPDGAddrs 是 ePDG 候选地址（域名或 IP）。
+	// 为空时按 MCC/MNC 做 DNS 发现。
+	EPDGAddrs []string
+	IMSI      string
+	MCC       string
+	MNC       string
+	APN       string
+	// LocalAddr/LocalPort 是本地绑定；为空时自动选择。
+	LocalAddr string
+	LocalPort uint16
+	// AlgorithmPolicy 是算法策略（strict/balanced/legacy_prefer），为空用 balanced。
+	AlgorithmPolicy string
+	// IKEProposals/ESPProposals 为空时用内部默认提议。
+	IKEProposals []string
+	ESPProposals []string
+	// 定时器：0 表示使用内部默认值。
+	RekeyIKE     time.Duration
+	RekeyChild   time.Duration
+	Reauth       time.Duration
+	NATKeepalive time.Duration
+	DPD          time.Duration
+	// WiresharkKeyLogPath 是 ESP 密钥日志路径（排障用，D-013）。
+	WiresharkKeyLogPath string
+}
 
 // SIPConfig：SIP 协议栈配置。WS-5/WS-6/WS-7 细化（注册参数、传输参数等）。
 type SIPConfig struct{}

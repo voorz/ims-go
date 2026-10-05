@@ -6,13 +6,21 @@ import (
 	"time"
 )
 
-// New 构造客户端：填充默认值 → 一次集中校验（D-007）。
+// New 构造客户端：填充默认值 → 一次集中校验（D-007）→ 默认模块装配。
 // 子系统通过 Config.Modules 以 interface 注入（D-010）；
 // 为 nil 的槽位表示该能力未装配，调用对应方法时返回哨兵错误。
+// 例外：SWu 隧道在已配置但未注入时自动装配默认实现（见 ims/swu.go）。
 func New(cfg Config) (*Client, error) {
 	cfg = applyDefaults(cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+	if cfg.Modules.Tunnel == nil && swuConfigured(cfg.SWu) {
+		tunnel, err := newDefaultTunnel(cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Modules.Tunnel = tunnel
 	}
 	c := &Client{
 		cfg:      cfg,
