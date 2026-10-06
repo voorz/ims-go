@@ -6,15 +6,74 @@ import (
 	sipsdk "github.com/emiago/sipgo/sip"
 
 	"github.com/voorz/ims-go/internal/sip/inbound"
+	"github.com/voorz/ims-go/internal/sip/stack"
 	"github.com/voorz/ims-go/internal/voice"
 )
 
 // 本文件集中语音配置的映射（WS-11）：
 // ims.VoiceConfig（公开用户偏好）→ internal/voice.Config（内部完整配置）的单处映射（D-007）。
 //
-// 注意：语音模块当前由消费方经 Config.Modules.Voice 注入（D-010），
-// 库暂不提供默认语音装配（需 SIP 栈的 Client/Server，P2 集成）。
-// 本映射函数供消费方创建 voice.Agent 时使用，保证配置语义一致。
+// A2-4：库提供默认语音装配（需 SIP 栈已装配）。消费方仍可经 Config.Modules.Voice 注入自定义实现（D-010）。
+
+// newDefaultVoice 创建默认语音模块（A2-4）。
+// 要求 cfg.Modules.SIP 已装配（取 sipgo Client/Server）；未装配时返回 nil（不装配语音）。
+func newDefaultVoice(cfg Config) (Module, error) {
+	// SIP 栈未装配 → 不装配语音
+	if cfg.Modules.SIP == nil {
+		return nil, nil
+	}
+	st, ok := cfg.Modules.SIP.(*stack.Stack)
+	if !ok {
+		// 消费方自备 SIP 实现时，自备语音模块
+		return nil, nil
+	}
+	vc := mapVoiceConfig(cfg)
+	// P-CSCF 地址：取第一个候选
+	if len(cfg.SIP.PCSCFAddrs) > 0 {
+		vc.PCSCFAddr = cfg.SIP.PCSCFAddrs[0]
+	}
+	vc.Client = st.SIPClient()
+	vc.Server = st.SIPServer()
+	agent := voice.NewAgent(vc)
+	return &voiceModuleAdapter{agent: agent}, nil
+}
+
+// voiceModuleAdapter 将 *voice.Agent 适配为 VoiceModule 接口。
+// Agent.Dial 返回 (callID string, err)，VoiceModule 需要 (*Call, error)。
+type voiceModuleAdapter struct {
+	agent *voice.Agent
+}
+
+func (m *voiceModuleAdapter) Start(ctx context.Context) error { return nil }
+
+func (m *voiceModuleAdapter) Stop() error {
+	m.agent.Close()
+	return nil
+}
+
+func (m *voiceModuleAdapter) Dial(ctx context.Context, req CallRequest) (*Call, error) {
+	callID, err := m.agent.Dial(ctx, req.To)
+	if err != nil {
+		return nil, err
+	}
+	return &Call{ID: callID, voice: m}, nil
+}
+
+func (m *voiceModuleAdapter) Hangup(ctx context.Context, callID string) error {
+	return m.agent.Hangup(ctx, callID)
+}
+
+// SetMediaAddr 设置媒体地址（A2-5 的内部实现，公开经 Client.SetMediaAddr）。
+func (m *voiceModuleAdapter) SetMediaAddr(localIP string, rtpPort int) {
+	m.agent.SetMediaAddr(localIP, rtpPort)
+}
+
+// voiceConfigured 报告是否需要默认语音装配。
+func voiceConfigured(cfg Config) bool {
+	// VoiceConfig 有实质内容（非全零）或显式要求时装配
+	vc := cfg.Voice
+	return vc.OnIncomingCall != nil || vc.Audio != nil || len(vc.Codecs) > 0
+}
 
 // mapVoiceConfig 将公开配置映射为内部 voice.Config。
 // IMPI/AKAProvider 从 SIP/SIM 配置取；LocalIP/RTPPort 需运行时设置

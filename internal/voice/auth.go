@@ -8,16 +8,15 @@ import (
 
 	"github.com/voorz/ims-go/internal/sim"
 	"github.com/voorz/ims-go/internal/sip/auth"
-	"github.com/voorz/ims-go/internal/sip/transport"
 )
 
 // doInviteWithAuth 发送 INVITE 并处理 401/407 Digest-AKA 挑战。
 // 复用 sim 包的 AKA 计算（与 REGISTER 同一套，D-015）。
 // 最多 3 轮挑战（防认证循环）。
-func (a *Agent) doInviteWithAuth(ctx context.Context, req *sip.Request) (*sip.Response, error) {
+func (a *Agent) doInviteWithAuth(ctx context.Context, req *sip.Request, call *Call) (*sip.Response, error) {
 	const maxRounds = 3
 	for round := 0; round < maxRounds; round++ {
-		res, err := transport.DoRequest(ctx, a.cfg.Client, req)
+		res, err := a.doInviteSingle(ctx, req, call)
 		if err != nil {
 			return nil, err
 		}
@@ -36,6 +35,54 @@ func (a *Agent) doInviteWithAuth(ctx context.Context, req *sip.Request) (*sip.Re
 		a.log.Info("INVITE AKA 挑战", "round", round+1, "status", res.StatusCode)
 	}
 	return nil, fmt.Errorf("voice: INVITE 认证超过最大轮数")
+}
+
+// doInviteSingle 发送单次 INVITE（含 PRACK 闭环，A2-1）。
+// 使用 TransactionRequest 拦截 1xx，触发 handleProvisional。
+func (a *Agent) doInviteSingle(ctx context.Context, req *sip.Request, call *Call) (*sip.Response, error) {
+	tx, err := a.cfg.Client.TransactionRequest(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("voice: 创建 INVITE 事务失败: %w", err)
+	}
+	defer tx.Terminate()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-tx.Done():
+			// 事务终止（超时/传输错误）
+			if terr := tx.Err(); terr != nil {
+				return nil, fmt.Errorf("voice: INVITE 事务失败: %w", terr)
+			}
+			return nil, fmt.Errorf("voice: INVITE 事务意外终止")
+		case res, ok := <-tx.Responses():
+			if !ok {
+				return nil, fmt.Errorf("voice: 事务响应通道关闭")
+			}
+			// 1xx：PRACK 处理（A2-1 闭环）
+			if res.StatusCode >= 100 && res.StatusCode < 200 {
+				if perr := a.handleProvisional(ctx, call, req, res); perr != nil {
+					a.log.Warn("PRACK 处理失败", "err", perr)
+				}
+				// 更新 early 状态：直接改 call.State（已在 Actor goroutine 内，
+				// 不可调 a.transition，否则死锁）。
+				switch res.StatusCode {
+				case 180:
+					if CanTransition(call.State, StateRinging) {
+						call.State = StateRinging
+					}
+				case 183:
+					if CanTransition(call.State, StateEarlyMedia) {
+						call.State = StateEarlyMedia
+					}
+				}
+				continue // 继续等最终响应
+			}
+			// 最终响应
+			return res, nil
+		}
+	}
 }
 
 // buildAuthInvite 根据 401/407 构造带 Authorization 的 INVITE。

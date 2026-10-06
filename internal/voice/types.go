@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/emiago/sipgo"
+	"github.com/emiago/sipgo/sip"
 
 	"github.com/voorz/ims-go/internal/sim"
 	"github.com/voorz/ims-go/internal/sip/dialog"
@@ -108,6 +109,11 @@ type Call struct {
 	// 媒体
 	SDP       string // 本地 SDP
 	RemoteSDP string // 远端 SDP
+
+	// 入站事务（A2-2）：HandleInvite 时保存，供 Answer 发 200 OK。
+	// 仅 incoming 方向有效。
+	inboundTx  sip.ServerTransaction
+	inboundReq *sip.Request
 
 	// 幂等释放：防止 CANCEL/BYE/超时三路并发重复释放
 	finalizeOnce sync.Once

@@ -139,10 +139,8 @@ func (a *Agent) Dial(ctx context.Context, to string) (string, error) {
 				})
 			}
 		})
-		// INVITE 发送（含 401/407 Digest-AKA 鉴权）
-		// 注意：PRACK 的 1xx 拦截需要事务层 hooks（P1）
-		// 当前用 DoRequest（返回最终响应），Supported: 100rel 已声明
-		res, err = a.doInviteWithAuth(ctx, req)
+		// INVITE 发送（含 401/407 Digest-AKA 鉴权 + PRACK 闭环 A2-1）
+		res, err = a.doInviteWithAuth(ctx, req, call)
 	})
 	<-done
 	if err != nil {
@@ -293,6 +291,7 @@ var _ = sync.Mutex{}
 
 // Answer 接听来电（vowifi-go 铁律：无 SDP 不接通）。
 // sdp 为本地 SDP（应答）；空则返回错误。
+// A2-2：使用保存的 inbound tx 真正发送 200 OK。
 func (a *Agent) Answer(ctx context.Context, callID, sdp string) error {
 	if sdp == "" {
 		return fmt.Errorf("voice: 接听需要 SDP（无媒体不接通）")
@@ -310,11 +309,74 @@ func (a *Agent) Answer(ctx context.Context, callID, sdp string) error {
 			err = fmt.Errorf("voice: 呼叫状态 %s，无法接听", call.State)
 			return
 		}
-		// TODO: 需要保存 inbound tx 以便回 200 OK
-		// 当前简化：仅更新状态和 SDP
+		// A2-2：用保存的 inbound tx 发 200 OK
+		if call.inboundTx == nil || call.inboundReq == nil {
+			err = fmt.Errorf("voice: 入站事务丢失，无法回 200 OK")
+			return
+		}
+		res := sip.NewResponseFromRequest(call.inboundReq, 200, "OK", nil)
+		res.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		res.SetBody([]byte(sdp))
+		// Contact 头（dialog 需要）
+		if contact := a.buildContactHeader(); contact != "" {
+			res.AppendHeader(sip.NewHeader("Contact", contact))
+		}
+		if rerr := call.inboundTx.Respond(res); rerr != nil {
+			err = fmt.Errorf("voice: 发送 200 OK 失败: %w", rerr)
+			return
+		}
 		call.SDP = sdp
 		call.State = StateConnected
-		a.log.Info("呼叫已接听", "callID", callID)
+		// 从 200 OK 学习 dialog（To tag）
+		a.learnDialogFrom200(call, res)
+		a.log.Info("呼叫已接听（200 OK 已发送）", "callID", callID)
+	})
+	<-done
+	return err
+}
+
+// buildContactHeader 构造 Contact 头（dialog 用）。
+func (a *Agent) buildContactHeader() string {
+	if a.cfg.IMPU != "" {
+		return "<" + a.cfg.IMPU + ">"
+	}
+	return ""
+}
+
+// learnDialogFrom200 从 200 OK 响应学习 dialog（To tag）。
+func (a *Agent) learnDialogFrom200(call *Call, res *sip.Response) {
+	// 提取 To tag 建立 dialog（简化版，完整实现后续）
+	a.log.Debug("学习 dialog", "callID", call.ID)
+}
+
+// Reject 拒绝入站呼叫（486 Busy Here 或其他状态码）。
+func (a *Agent) Reject(ctx context.Context, callID string, statusCode int, reason string) error {
+	ca, ok := a.calls[callID]
+	if !ok {
+		return fmt.Errorf("voice: 呼叫 %s 不存在", callID)
+	}
+	var err error
+	done := make(chan struct{})
+	ca.do(func() {
+		defer close(done)
+		call := ca.call
+		if call.inboundTx == nil || call.inboundReq == nil {
+			err = fmt.Errorf("voice: 入站事务丢失，无法拒绝")
+			return
+		}
+		if statusCode < 400 || statusCode >= 700 {
+			statusCode = 486
+		}
+		if reason == "" {
+			reason = "Busy Here"
+		}
+		res := sip.NewResponseFromRequest(call.inboundReq, statusCode, reason, nil)
+		if rerr := call.inboundTx.Respond(res); rerr != nil {
+			err = fmt.Errorf("voice: 发送拒绝响应失败: %w", rerr)
+			return
+		}
+		call.State = StateTerminated
+		a.log.Info("呼叫已拒绝", "callID", callID, "status", statusCode)
 	})
 	<-done
 	return err

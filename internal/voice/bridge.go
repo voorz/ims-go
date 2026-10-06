@@ -21,6 +21,13 @@ func (b *Bridge) HandleInvite(req *sip.Request, tx sip.ServerTransaction) bool {
 		State:     StateInit,
 		Direction: "incoming",
 		RemoteURI: remoteURI,
+		// A2-2：保存入站事务，供 Answer 发 200 OK
+		inboundTx:  tx,
+		inboundReq: req,
+	}
+	// 保存远端 SDP
+	if body := req.Body(); len(body) > 0 {
+		call.RemoteSDP = string(body)
 	}
 	ca := b.agent.newCallActor(call)
 	ca.do(func() {

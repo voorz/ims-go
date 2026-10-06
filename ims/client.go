@@ -80,6 +80,13 @@ func New(cfg Config) (*Client, error) {
 			cfg.Modules.USSD = ussdMod
 		}
 	}
+	// Voice 默认装配（A2-4，需 SIP 栈；消费方可注入自定义实现）。
+	if cfg.Modules.Voice == nil && voiceConfigured(cfg) {
+		voiceMod, err := newDefaultVoice(cfg)
+		if err == nil && voiceMod != nil {
+			cfg.Modules.Voice = voiceMod.(VoiceModule)
+		}
+	}
 	c := &Client{
 		cfg:      cfg,
 		disp:     newDispatcher(),
@@ -367,4 +374,19 @@ func (c *Call) Hangup(ctx context.Context) error {
 		return ErrNoVoiceModule
 	}
 	return c.voice.Hangup(ctx, c.ID)
+}
+
+// SetMediaAddr 设置语音媒体地址（A2-5）。
+// localIP 是隧道内 IP（IKEv2 完成后分配），rtpPort 是 RTP 端口。
+// 需在隧道建立后、呼叫前调用；SDP 中的媒体地址据此生成。
+func (v VoiceControl) SetMediaAddr(localIP string, rtpPort int) error {
+	if v.m == nil {
+		return ErrNoVoiceModule
+	}
+	// 仅默认装配的 voiceModuleAdapter 支持；自定义实现可忽略
+	if a, ok := v.m.(*voiceModuleAdapter); ok {
+		a.SetMediaAddr(localIP, rtpPort)
+		return nil
+	}
+	return nil
 }

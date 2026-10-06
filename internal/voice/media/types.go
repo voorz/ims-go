@@ -116,3 +116,80 @@ type DTMFSender struct {
 
 	send func(pkt []byte) error
 }
+
+// PipelineConfig 是 PCM↔RTP 管道配置（A2-6）。
+type PipelineConfig struct {
+	Codec       Codec
+	Audio       AudioIO
+	Relay       *RTPRelay
+	PayloadType uint8
+	SSRC        uint32
+}
+
+// AudioIO 是 PCM 音频接口（与 voice.AudioIO 同构，避免循环导入）。
+type AudioIO interface {
+	ReadPCM() (pcm []int16, end bool, err error)
+	WritePCM(pcm []int16) error
+	SampleRate() int
+	Close() error
+}
+
+// Codec 是音频编解码器接口（A2-6）。
+//
+// 设计说明：AMR/AMR-WB 的 DSP 核心（3GPP TS 26.071）是数周工作量，
+// 不在本阶段实现。本接口可插拔：生产环境注入真实 DSP 实现
+// （如 opencore-amr 的 cgo 封装，或纯 Go 实现），测试用 NullCodec。
+//
+// RTP 打包（RFC 4867）由 Pipeline 负责，与 DSP 解耦。
+type Codec interface {
+	// Name 返回编解码器名（"AMR" / "AMR-WB"）。
+	Name() string
+	// SampleRate 返回采样率（AMR=8000，AMR-WB=16000）。
+	SampleRate() int
+	// FrameDuration 返回每帧时长（毫秒，AMR=20）。
+	FrameDuration() int
+	// Encode 将 PCM 编码为负载字节；pcm 长度应为一帧采样数。
+	Encode(pcm []int16) ([]byte, error)
+	// Decode 将负载字节解码为 PCM。
+	Decode(data []byte) ([]int16, error)
+}
+
+// NullCodec 是直通编解码器（测试用）。
+// Encode 将 int16 PCM 转为字节（小端），Decode 反之。无压缩，仅用于管道联调。
+type NullCodec struct {
+	name       string
+	sampleRate int
+}
+
+// Pipeline 是 PCM↔RTP 管道（A2-6）。
+//
+// 数据流：
+//
+//	发送：AudioIO.ReadPCM() → Codec.Encode() → RTP 打包 → Relay 发送
+//	接收：Relay 接收 → RTP 解包 → Codec.Decode() → AudioIO.WritePCM()
+//
+// RTP 头（12 字节，RFC 3550）：
+//
+//	 0                   1                   2                   3
+//	 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//	|V=2|P|X|  CC   |M|     PT      |       sequence number         |
+//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//	|                           timestamp                           |
+//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+//	|           synchronization source (SSRC) identifier            |
+//	+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+type Pipeline struct {
+	codec  Codec
+	audio  AudioIO
+	relay  *RTPRelay
+	pt     uint8 // payload type（AMR=114 动态，AMR-WB=115 动态，实际由 SDP 协商）
+	ssrc   uint32
+	seq    uint16
+	ts     uint32
+	mu     sync.Mutex
+	sendCh chan []byte
+	recvCh chan []byte
+	stopCh chan struct{}
+	wg     sync.WaitGroup
+}
