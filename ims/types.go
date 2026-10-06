@@ -31,16 +31,70 @@ type Config struct {
 // SIMConfig：SIM/AKA 相关配置。
 type SIMConfig struct {
 	// AKAProvider 由消费方注入（硬件 SIM 经 APDU/QMI 调制解调器，D-010）。
-	AKAProvider sim.AKAProvider
+	AKAProvider AKAProvider
 	SoftSIM     SoftSIMConfig
+}
+
+// AKAProvider 是公开的 AKA 契约（消费方实现）。
+// 内部适配为 sim.AKAProvider（红线#9：对外不暴露 internal 类型）。
+type AKAProvider interface {
+	CalculateAKA(rand16, autn16 []byte) (AKAResult, error)
+}
+
+// AKAResult 是 AKA 计算结果（公开类型）。
+type AKAResult struct {
+	RES  []byte // 认证响应
+	CK   []byte // 加密密钥
+	IK   []byte // 完整性密钥
+	AUTS []byte // 重同步令牌（同步失败时）
 }
 
 // SoftSIMConfig：软 SIM（milenage）开关（D-015）。
 type SoftSIMConfig struct {
-	// Enable 默认 false；启用后仅允许测试密钥（sim.TestKeys / sim.CustomTestKeys）。
+	// Enable 默认 false；启用后仅允许测试密钥（ims.TestKeys / ims.CustomTestKeys）。
 	Enable bool
 	// Keys 测试密钥；Enable 时必须有效。
-	Keys sim.MilenageKeys
+	Keys MilenageKeys
+}
+
+// MilenageKeys 是软 SIM 测试密钥的不透明句柄（D-015）。
+// 只能由 TestKeys / CustomTestKeys 构造；内部持有 sim.MilenageKeys（不暴露）。
+type MilenageKeys struct {
+	inner sim.MilenageKeys
+}
+
+// Valid 报告密钥是否有效。
+func (k MilenageKeys) Valid() bool { return k.inner.Valid() }
+
+// TestKeys 返回 3GPP 测试密钥（仅测试/实验室用）。
+func TestKeys() MilenageKeys { return MilenageKeys{inner: sim.TestKeys()} }
+
+// CustomTestKeys 由给定的 K/OP 构造测试密钥。
+func CustomTestKeys(k, op []byte, useOPc bool) (MilenageKeys, error) {
+	inner, err := sim.CustomTestKeys(k, op, useOPc)
+	if err != nil {
+		return MilenageKeys{}, err
+	}
+	return MilenageKeys{inner: inner}, nil
+}
+
+// simAKAAdapter 将公开 AKAProvider 适配为内部 sim.AKAProvider。
+type simAKAAdapter struct{ p AKAProvider }
+
+func (a simAKAAdapter) CalculateAKA(rand16, autn16 []byte) (sim.AKAResult, error) {
+	r, err := a.p.CalculateAKA(rand16, autn16)
+	if err != nil {
+		return sim.AKAResult{}, err
+	}
+	return sim.AKAResult{RES: r.RES, CK: r.CK, IK: r.IK, AUTS: r.AUTS}, nil
+}
+
+// toSimAKAProvider 将公开 AKAProvider 适配为内部 sim.AKAProvider。
+func toSimAKAProvider(p AKAProvider) sim.AKAProvider {
+	if p == nil {
+		return nil
+	}
+	return simAKAAdapter{p: p}
 }
 
 // SWuConfig：SWu/IKEv2 隧道配置（WS-3 收敛后的公开子集）。

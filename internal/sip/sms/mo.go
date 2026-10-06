@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/emiago/sipgo/sip"
+	"github.com/warthog618/sms/encoding/tpdu"
 
 	smscodec "github.com/voorz/ims-go/internal/sip/sms/codec"
 	"github.com/voorz/ims-go/internal/sip/transport"
@@ -75,16 +76,22 @@ func (s *SMS) Send(ctx context.Context, to, text string) (string, error) {
 }
 
 // sendSegment 发送单个分片（带重试）。
-func (s *SMS) sendSegment(ctx context.Context, msg Message, tpdu interface{}, idx, total int) error {
-	// 将 TPDU 编码为 RP-DATA，经 SIP MESSAGE 发送
-	// 简化：文本直接作为 MESSAGE 体（实际应封装 RP-DATA）
+// TPDU 经 MarshalBinary 编码 → RP-DATA 封装 → SIP MESSAGE（application/vnd.3gpp.sms）。
+func (s *SMS) sendSegment(ctx context.Context, msg Message, tpdu tpdu.TPDU, idx, total int) error {
+	tpduBytes, err := tpdu.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("sms: TPDU 编码失败: %w", err)
+	}
+	// RP-MR 用分片序号；SMSC 为空（由网络填充）
+	rpData := smscodec.BuildRPData(byte(idx), tpduBytes, "")
+
 	var lastErr error
 	for attempt := 0; attempt <= s.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
 			s.log.Info("SMS 重试", "id", msg.ID, "attempt", attempt)
 			time.Sleep(time.Duration(attempt) * time.Second)
 		}
-		if err := s.sendMessage(ctx, msg.To, msg.Text); err != nil {
+		if err := s.sendRPData(ctx, msg.To, rpData); err != nil {
 			lastErr = err
 			continue
 		}
@@ -93,20 +100,20 @@ func (s *SMS) sendSegment(ctx context.Context, msg Message, tpdu interface{}, id
 	return lastErr
 }
 
-// sendMessage 发送单条 SIP MESSAGE。
-func (s *SMS) sendMessage(ctx context.Context, to, text string) error {
+// sendRPData 经 SIP MESSAGE 发送 RP-DATA。
+func (s *SMS) sendRPData(ctx context.Context, to string, rpData []byte) error {
 	recipient := sip.Uri{Host: to}
 	recipient.UriParams = sip.HeaderParams{{K: "transport", V: "tcp"}}
 	req := sip.NewRequest(sip.MESSAGE, recipient)
 	req.SetDestination(s.cfg.PCSCFAddr)
-	req.AppendHeader(sip.NewHeader("Content-Type", "text/plain"))
-	req.SetBody([]byte(text))
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/vnd.3gpp.sms"))
+	req.SetBody(rpData)
 
 	res, err := transport.DoRequest(ctx, s.cfg.Client, req)
 	if err != nil {
 		return err
 	}
-	if res.StatusCode != 200 {
+	if res.StatusCode != 200 && res.StatusCode != 202 {
 		return fmt.Errorf("MESSAGE 失败，状态码 %d", res.StatusCode)
 	}
 	return nil

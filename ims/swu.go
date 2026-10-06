@@ -45,9 +45,9 @@ func newDefaultTunnel(cfg Config) (Module, error) {
 	// AKA：优先消费方注入的硬件 provider，其次软 SIM（D-015）。
 	switch {
 	case cfg.SIM.AKAProvider != nil:
-		sc.AKAProvider = cfg.SIM.AKAProvider
+		sc.AKAProvider = toSimAKAProvider(cfg.SIM.AKAProvider)
 	case cfg.SIM.SoftSIM.Enable:
-		ss, err := sim.NewSoftSIM(cfg.SWu.IMSI, cfg.SIM.SoftSIM.Keys)
+		ss, err := sim.NewSoftSIM(cfg.SWu.IMSI, cfg.SIM.SoftSIM.Keys.inner)
 		if err != nil {
 			return nil, err
 		}

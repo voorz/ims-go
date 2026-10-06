@@ -3,8 +3,6 @@ package ims
 import (
 	"errors"
 	"testing"
-
-	"github.com/voorz/ims-go/internal/sim"
 )
 
 func TestNewAutoWiresTunnel(t *testing.T) {
@@ -12,7 +10,7 @@ func TestNewAutoWiresTunnel(t *testing.T) {
 	cfg.SWu.EPDGAddrs = []string{"epdg.example.com"}
 	cfg.SWu.IMSI = "001010000000001"
 	cfg.SIM.SoftSIM.Enable = true
-	cfg.SIM.SoftSIM.Keys = sim.TestKeys()
+	cfg.SIM.SoftSIM.Keys = TestKeys()
 
 	c, err := New(cfg)
 	if err != nil {
