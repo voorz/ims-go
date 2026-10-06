@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+
+	"github.com/voorz/ims-go/internal/carrier/profile"
 )
 
 // NewResolver 创建解析器。
@@ -71,7 +73,7 @@ func (r *Resolver) LoadOverrideJSON(data []byte) error {
 func (r *Resolver) ResolveEffectiveCarrierConfig(mcc, mnc string) (*CarrierConfig, error) {
 	key := mcc + mnc
 
-	// 1. JSON 覆盖
+	// 1. JSON 覆盖（用户手动指定，最高优先级）
 	r.mu.RLock()
 	if cfg, ok := r.overrides[key]; ok {
 		r.mu.RUnlock()
@@ -88,7 +90,22 @@ func (r *Resolver) ResolveEffectiveCarrierConfig(mcc, mnc string) (*CarrierConfi
 		}
 	}
 
-	// 3. preset
+	// 3. 运营商画像（按需拉取，iOS 原厂数据）
+	if r.profileFetcher != nil {
+		plmn := mcc + mnc // 注意：保持真实 MNC 宽度，不强制补零
+		var sim profile.SIMIdentity
+		if r.simIdentityProvider != nil {
+			sim = r.simIdentityProvider()
+		}
+		if p, err := r.profileFetcher.FetchProfile(plmn, sim); err == nil && p != nil {
+			r.log.Info("使用运营商画像", "mcc", mcc, "mnc", mnc, "profile", p.ID)
+			return profileToConfig(p, plmn, mcc, mnc), nil
+		} else if err != nil {
+			r.log.Warn("画像拉取失败，回退 preset", "err", err)
+		}
+	}
+
+	// 4. 内嵌 preset
 	r.mu.RLock()
 	if cfg, ok := r.presets[key]; ok {
 		r.mu.RUnlock()
@@ -96,7 +113,7 @@ func (r *Resolver) ResolveEffectiveCarrierConfig(mcc, mnc string) (*CarrierConfi
 	}
 	r.mu.RUnlock()
 
-	// 4. 推导（默认模板，WS-18 完善推导引擎）
+	// 5. 推导（默认模板，WS-18 完善推导引擎）
 	r.log.Info("未找到运营商档案，使用推导默认", "mcc", mcc, "mnc", mnc)
 	return &CarrierConfig{
 		MCC:  mcc,
@@ -108,6 +125,15 @@ func (r *Resolver) ResolveEffectiveCarrierConfig(mcc, mnc string) (*CarrierConfi
 			AccessType: "IEEE-802.11",
 		},
 	}, nil
+}
+
+// SetProfileFetcher 设置画像拉取器（可选）。
+// 启用后，画像作为 preset 层的数据源（优先级：覆盖 > 已学习 > 画像 > 内嵌 preset > 推导）。
+func (r *Resolver) SetProfileFetcher(f *profile.Fetcher, simProvider func() profile.SIMIdentity) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.profileFetcher = f
+	r.simIdentityProvider = simProvider
 }
 
 // IsVoWiFiBlockedMCC 报告 MCC 是否被阻止 VoWiFi。

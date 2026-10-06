@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/voorz/ims-go/internal/carrier/profile"
 )
 
 // CarrierConfig 是统一运营商档案。
@@ -64,6 +66,11 @@ type Resolver struct {
 	presets   map[string]CarrierConfig // key: MCC+MNC
 	overrides map[string]CarrierConfig
 	store     LearnedProfileStore
+	// profileFetcher 是运营商画像拉取器（按需从云端获取，不嵌入）。
+	// 为 nil 时不启用画像，仅用内嵌 preset。
+	profileFetcher *profile.Fetcher
+	// simIdentityProvider 提供当前 SIM 身份（用于 selector 匹配）。
+	simIdentityProvider func() profile.SIMIdentity
 }
 
 // DeriveParam 是可推导的参数。
