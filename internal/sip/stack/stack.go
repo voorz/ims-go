@@ -179,7 +179,12 @@ func (s *Stack) Start(ctx context.Context) error {
 	s.mu.Lock()
 	s.running = true
 	s.mu.Unlock()
-	return nil
+
+	// 阻塞到 ctx 取消：supervise 循环期望 Start() 阻塞，
+	// 返回 nil 会被误判为"非预期退出"导致无限重启。
+	// （2026-10-07：与 Tunnel.Start 的阻塞语义一致。）
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // Stop 停止协议栈。

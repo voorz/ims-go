@@ -201,6 +201,15 @@ func (c *Client) Stop() error {
 	return nil
 }
 
+// IsRunning 报告客户端是否处于运行态（已 Start 且未 Stop）。
+// 用于调用方检测僵尸实例：非 nil 但已停止的 Client 应被视为不存在。
+func (c *Client) IsRunning() bool {
+	if c == nil {
+		return false
+	}
+	return c.state.Load() == int32(lcRunning)
+}
+
 // supervise 监督单个模块：非预期退出时按 RecoveryPolicy 退避重启（H3），
 // 每次决策 emit 结构化决策记录（P2）。
 func (c *Client) supervise(s moduleSlot) {
