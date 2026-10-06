@@ -21,7 +21,9 @@
 - B：接受双版本。消费方需做类型隔离，长期维护成本高。
 - C：ims-go 改用 fork。违反 D-012，且 fork 长期不维护的风险更高。
 
-**建议**：选 A，需用户确认 vohive-libs 的迁移排期。
+**用户结论（2026-10-06）**：此问题可跳过。fork 与上游无架构区别，
+fork 的改动只是为适配旧 vowifi-core 做的补丁，重构后大概率用不着。
+ims-go 继续用上游 `emiago/sipgo`，无需处理。
 
 ## 第 5 条：VoiceConfig 和 CarrierConfig 为空
 

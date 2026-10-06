@@ -145,11 +145,37 @@ type SIPConfig struct {
 	EAPRES string
 }
 
-// VoiceConfig：语音配置。WS-11/WS-12 细化（编解码偏好、DTMF 模式等）。
-type VoiceConfig struct{}
+// VoiceConfig：语音用户偏好（WS-11）。
+// 字段均为用户可调的业务偏好；内部 wiring（Client/Server/IMPU 等）由库装配，不暴露。
+type VoiceConfig struct {
+	// Codecs 是 SDP offer 中的编码偏好顺序，如 ["AMR-WB", "AMR"]。
+	// 空用默认 ["AMR-WB", "AMR", "telephone-event"]。
+	// 实际场景：某些运营商只接受 AMR-NB，需去掉 AMR-WB。
+	Codecs []string
+	// DTMFMode 是 DTMF 发送模式："rfc4733"（默认）或 "inband"。
+	// 实际场景：某些网络的 DTMF 网关对 RFC 4733 支持不佳。
+	DTMFMode string
+	// MaxCalls 是最大并发呼叫数；0 用默认 2。
+	// 实际场景：单卡设备通常 1-2 路。
+	MaxCalls int
+	// DisableSessionTimer 为 true 时关闭 Session Timer（RFC 4028）。
+	// 实际场景：某些 P-CSCF 对 Session-Expires 处理有 bug。
+	DisableSessionTimer bool
+	// NoAnswerTimeout 是未接听超时；0 用默认 60s。
+	NoAnswerTimeout time.Duration
+}
 
-// CarrierConfig：运营商配置。WS-13 细化（档案覆盖、推导开关等）。
-type CarrierConfig struct{}
+// CarrierConfig：运营商覆盖（WS-13 内部模型的公开子集）。
+// 这是"JSON override"层：用户显式指定的值优先于 preset/推导/学习。
+// 优先级：本结构字段 > LearnedProfile > preset > 推导。
+type CarrierConfig struct {
+	// MCCMNC 如 "23415"；空则自动推导（SIM/网络）。
+	// 实际场景：测试、MVNO、手动指定。
+	MCCMNC string
+	// EPDGAddr 覆盖 ePDG 地址；空则用 preset/推导。
+	// 实际场景：自定义 APN、企业专线。
+	EPDGAddr string
+}
 
 // DataplaneMode：数据面模式（D-013）。
 type DataplaneMode string

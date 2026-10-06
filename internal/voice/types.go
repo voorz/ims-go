@@ -126,6 +126,18 @@ type Config struct {
 	OnIncomingCall func(call *Call)
 	// Logger 为空时用 slog 默认。
 	Logger *slog.Logger
+
+	// 以下为用户偏好（从 ims.VoiceConfig 映射）：
+	// Codecs 是 SDP offer 编码偏好；空用默认。
+	Codecs []string
+	// DTMFMode 是 DTMF 模式："rfc4733"（默认）或 "inband"。
+	DTMFMode string
+	// MaxCalls 是最大并发；0 用默认 2。
+	MaxCalls int
+	// DisableSessionTimer 为 true 时关闭 Session Timer。
+	DisableSessionTimer bool
+	// NoAnswerTimeout 是未接听超时；0 用默认 60s。
+	NoAnswerTimeout time.Duration
 }
 
 // Agent 是 per-device 语音实例（D-014）。
