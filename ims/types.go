@@ -51,6 +51,14 @@ type AKAProvider interface {
 	CalculateAKA(rand16, autn16 []byte) (AKAResult, error)
 }
 
+// ISIMAKAProvider 是可选接口：支持 ISIM 应用认证的 AKA 提供者。
+// 对标 vowifi-core engine/sim.ISIMAKAProvider，供迁移使用。
+// 调用方用类型断言检测，失败时回退到普通 AKAProvider（USIM）。
+type ISIMAKAProvider interface {
+	AKAProvider
+	CalculateISIMAKA(rand16, autn16 []byte) (AKAResult, error)
+}
+
 // AKAResult 是 AKA 计算结果（公开类型）。
 type AKAResult struct {
 	RES  []byte // 认证响应
