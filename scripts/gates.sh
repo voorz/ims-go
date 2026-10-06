@@ -86,12 +86,20 @@ gate6() {
   go vet ./... 2>&1
 }
 
+# ⑦ ims 公开 API 不得暴露 internal/ 类型（红线#9）
+gate7() {
+  local hits
+  hits=$(go doc -all github.com/voorz/ims-go 2>/dev/null | grep -e 'internal/' || true)
+  if [ -n "$hits" ]; then echo "$hits"; return 1; fi
+}
+
 gate "①" "禁 raw string 拼 SIP" gate1
 gate "②" "公开 API 禁 map/interface{}" gate2
 gate "③" "导出类型集中 types.go" gate3
 gate "④" "单公开包 ims" gate4
 gate "⑤" "禁 ToInternal/FromInternal" gate5
 gate "⑥" "gofmt + go vet" gate6
+gate "⑦" "公开 API 不暴露 internal 类型" gate7
 
 echo "----"
 echo "通过 ${PASS} / 失败 ${FAIL}"
