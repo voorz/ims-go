@@ -40,8 +40,26 @@ func mapVoiceConfig(cfg VoiceConfig) voice.Config {
 	if cfg.NoAnswerTimeout > 0 {
 		out.NoAnswerTimeout = cfg.NoAnswerTimeout
 	}
+	out.Audio = toVoiceAudio(cfg.Audio)
 	return out
 }
+
+// toVoiceAudio 将公开 AudioIO 转为内部 voice.AudioIO（nil 安全）。
+func toVoiceAudio(a AudioIO) voice.AudioIO {
+	if a == nil {
+		return nil
+	}
+	return &audioAdapter{a: a}
+}
+
+type audioAdapter struct {
+	a AudioIO
+}
+
+func (x *audioAdapter) ReadPCM() ([]int16, bool, error) { return x.a.ReadPCM() }
+func (x *audioAdapter) WritePCM(pcm []int16) error      { return x.a.WritePCM(pcm) }
+func (x *audioAdapter) SampleRate() int                 { return x.a.SampleRate() }
+func (x *audioAdapter) Close() error                    { return x.a.Close() }
 
 // incomingCallAdapter 将公开 IncomingCallHandler 适配为内部 inbound.VoiceRequestHandler。
 type incomingCallAdapter struct {

@@ -1,6 +1,7 @@
 package voice
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -14,21 +15,66 @@ import (
 //   a=des:qos optional remote sendrecv  — 远端期望（可选）
 
 // buildInviteSDP 构造 INVITE 的 SDP（含 precondition）。
-// 使用对象模型而非字符串拼接（超越 vowifi-go）。
+// 使用真实 IP/端口/codec（非硬编码）。
 func (a *Agent) buildInviteSDP() string {
+	ip := a.cfg.LocalIP
+	if ip == "" {
+		ip = "127.0.0.1" // fallback，生产应配置隧道 IP
+	}
+	port := a.cfg.RTPPort
+	if port == 0 {
+		port = 5004 // fallback
+	}
 	var sb strings.Builder
 	sb.WriteString("v=0\r\n")
-	sb.WriteString("o=- 0 0 IN IP4 127.0.0.1\r\n")
+	sb.WriteString(fmt.Sprintf("o=- 0 0 IN IP4 %s\r\n", ip))
 	sb.WriteString("s=-\r\n")
-	sb.WriteString("c=IN IP4 127.0.0.1\r\n")
+	sb.WriteString(fmt.Sprintf("c=IN IP4 %s\r\n", ip))
 	sb.WriteString("t=0 0\r\n")
-	sb.WriteString("m=audio 5004 RTP/AVP 0\r\n")
+	// m= 行：根据 codec 偏好生成 PT 列表
+	pts, rtpmaps := a.codecPTs()
+	sb.WriteString(fmt.Sprintf("m=audio %d RTP/AVP %s\r\n", port, strings.Join(pts, " ")))
+	for _, rm := range rtpmaps {
+		sb.WriteString(rm + "\r\n")
+	}
 	// Precondition 属性（RFC 3312）
 	sb.WriteString("a=curr:qos local sendrecv\r\n")
 	sb.WriteString("a=curr:qos remote none\r\n")
 	sb.WriteString("a=des:qos mandatory local sendrecv\r\n")
 	sb.WriteString("a=des:qos optional remote sendrecv\r\n")
 	return sb.String()
+}
+
+// codecPTs 将 codec 偏好转为 PT 列表和 rtpmap 行。
+// AMR-WB=104, AMR=103, telephone-event=101（动态 PT，避免与静态冲突）。
+func (a *Agent) codecPTs() (pts []string, rtpmaps []string) {
+	codecs := a.cfg.Codecs
+	if len(codecs) == 0 {
+		codecs = []string{"AMR-WB", "AMR", "telephone-event"}
+	}
+	ptMap := map[string]int{
+		"AMR-WB":          104,
+		"AMR":             103,
+		"telephone-event": 101,
+	}
+	rtpmapMap := map[string]string{
+		"AMR-WB":          "a=rtpmap:104 AMR-WB/16000/1",
+		"AMR":             "a=rtpmap:103 AMR/8000/1",
+		"telephone-event": "a=rtpmap:101 telephone-event/8000",
+	}
+	for _, c := range codecs {
+		if pt, ok := ptMap[c]; ok {
+			pts = append(pts, fmt.Sprintf("%d", pt))
+			rtpmaps = append(rtpmaps, rtpmapMap[c])
+		}
+	}
+	// telephone-event 加 fmtp
+	for _, c := range codecs {
+		if c == "telephone-event" {
+			rtpmaps = append(rtpmaps, "a=fmtp:101 0-15")
+		}
+	}
+	return pts, rtpmaps
 }
 
 // parsePrecondition 从 SDP 解析 precondition 状态。

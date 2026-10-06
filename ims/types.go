@@ -196,6 +196,24 @@ type VoiceConfig struct {
 	// OnIncomingCall 是入站呼叫回调（H1）。
 	// 为 nil 时，若装配了语音模块则由内部处理；主项目可实现 IncomingCallHandler 接管。
 	OnIncomingCall IncomingCallHandler
+	// Audio 是 PCM 音频接口；nil 时语音无音频（仅信令）。
+	// VoWiFi 语音的音频由 ims 库负责 RTP 打包，PCM 由消费方提供（麦克风/扬声器）。
+	Audio AudioIO
+}
+
+// AudioIO 是 PCM 音频接口（VoWiFi 语音）。
+// 采样率 8000Hz（AMR）或 16000Hz（AMR-WB），16-bit 单声道 PCM。
+// 实现方负责音频设备的打开/关闭；库负责 RTP 打包/解包。
+type AudioIO interface {
+	// ReadPCM 读取一帧 PCM（160 或 320 采样，20ms）。
+	// 返回 (pcm, false, nil) 表示静音帧；(nil, true, nil) 表示流结束。
+	ReadPCM() (pcm []int16, end bool, err error)
+	// WritePCM 写入一帧解码后的 PCM。
+	WritePCM(pcm []int16) error
+	// SampleRate 返回采样率（8000 或 16000）。
+	SampleRate() int
+	// Close 关闭音频设备。
+	Close() error
 }
 
 // IncomingCallHandler 处理入站语音呼叫（H1 桥接的公开契约）。

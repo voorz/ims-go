@@ -139,9 +139,10 @@ func (a *Agent) Dial(ctx context.Context, to string) (string, error) {
 				})
 			}
 		})
+		// INVITE 发送（含 401/407 Digest-AKA 鉴权）
 		// 注意：PRACK 的 1xx 拦截需要事务层 hooks（P1）
 		// 当前用 DoRequest（返回最终响应），Supported: 100rel 已声明
-		res, err = transport.DoRequest(ctx, a.cfg.Client, req)
+		res, err = a.doInviteWithAuth(ctx, req)
 	})
 	<-done
 	if err != nil {

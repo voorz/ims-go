@@ -11,6 +11,7 @@ import (
 
 	"github.com/emiago/sipgo"
 
+	"github.com/voorz/ims-go/internal/sim"
 	"github.com/voorz/ims-go/internal/sip/dialog"
 )
 
@@ -115,15 +116,34 @@ type Call struct {
 }
 
 // Config 是 Agent 配置。
+// AudioIO 是内部 PCM 音频接口（与 ims.AudioIO 同构）。
+type AudioIO interface {
+	ReadPCM() (pcm []int16, end bool, err error)
+	WritePCM(pcm []int16) error
+	SampleRate() int
+	Close() error
+}
+
 type Config struct {
 	// IMPU 是本地标识。
 	IMPU string
+	// IMPI 是私有用户标识（INVITE 鉴权用）。
+	IMPI string
 	// PCSCFAddr 是 P-CSCF 地址。
 	PCSCFAddr string
 	// Client 是 sipgo 客户端。
 	Client *sipgo.Client
 	// Server 是 sipgo 服务端（入站）。
 	Server *sipgo.Server
+	// AKAProvider 用于 INVITE 401/407 Digest-AKA（与 REGISTER 同一套）。
+	AKAProvider sim.AKAProvider
+	// LocalIP 是 SDP 中的媒体 IP（隧道内 IP）；空则自动探测。
+	LocalIP string
+	// RTPPort 是 SDP 中的 RTP 端口；0 则用媒体中继实际端口。
+	RTPPort int
+	// Audio 是 PCM 音频接口；nil 时无音频（仅信令测试）。
+	// 与 ims.AudioIO 同构，内部适配。
+	Audio AudioIO
 	// OnStateChange 状态变更回调。
 	OnStateChange func(callID string, from, to State)
 	// OnIncomingCall 入站呼叫回调（H1 桥接）。
