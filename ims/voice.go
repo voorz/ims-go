@@ -16,31 +16,41 @@ import (
 // 库暂不提供默认语音装配（需 SIP 栈的 Client/Server，P2 集成）。
 // 本映射函数供消费方创建 voice.Agent 时使用，保证配置语义一致。
 
-// mapVoiceConfig 将公开 VoiceConfig 映射为内部 voice.Config 的偏好部分。
-// 调用方需另行填充 IMPU/PCSCFAddr/Client/Server（由 SIP 栈提供）。
-func mapVoiceConfig(cfg VoiceConfig) voice.Config {
+// mapVoiceConfig 将公开配置映射为内部 voice.Config。
+// IMPI/AKAProvider 从 SIP/SIM 配置取；LocalIP/RTPPort 需运行时设置
+// （隧道 IP 是 IKEv2 完成后动态分配，静态配置时未知）。
+// 调用方需另行填充 PCSCFAddr/Client/Server（由 SIP 栈提供）。
+func mapVoiceConfig(cfg Config) voice.Config {
+	vc := cfg.Voice
 	out := voice.Config{
-		DisableSessionTimer: cfg.DisableSessionTimer,
+		IMPU:                cfg.SIP.IMPU,
+		IMPI:                cfg.SIP.IMPI,
+		DisableSessionTimer: vc.DisableSessionTimer,
 	}
-	if len(cfg.Codecs) > 0 {
-		out.Codecs = cfg.Codecs
+	// AKA：与 REGISTER 共用 SIM 配置（D-015）
+	if cfg.SIM.AKAProvider != nil {
+		out.AKAProvider = toSimAKAProvider(cfg.SIM.AKAProvider)
+	}
+	if len(vc.Codecs) > 0 {
+		out.Codecs = vc.Codecs
 	} else {
 		out.Codecs = []string{"AMR-WB", "AMR", "telephone-event"}
 	}
-	if cfg.DTMFMode != "" {
-		out.DTMFMode = cfg.DTMFMode
+	if vc.DTMFMode != "" {
+		out.DTMFMode = vc.DTMFMode
 	} else {
 		out.DTMFMode = "rfc4733"
 	}
-	if cfg.MaxCalls > 0 {
-		out.MaxCalls = cfg.MaxCalls
+	if vc.MaxCalls > 0 {
+		out.MaxCalls = vc.MaxCalls
 	} else {
 		out.MaxCalls = 2
 	}
-	if cfg.NoAnswerTimeout > 0 {
-		out.NoAnswerTimeout = cfg.NoAnswerTimeout
+	if vc.NoAnswerTimeout > 0 {
+		out.NoAnswerTimeout = vc.NoAnswerTimeout
 	}
-	out.Audio = toVoiceAudio(cfg.Audio)
+	out.Audio = toVoiceAudio(vc.Audio)
+	// LocalIP/RTPPort：运行时由隧道建立后设置（见 Agent.SetMediaAddr）
 	return out
 }
 

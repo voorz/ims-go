@@ -348,3 +348,15 @@ func (a *Agent) DialEmergency(ctx context.Context, destination string) (string, 
 	}
 	return callID, nil
 }
+
+// SetMediaAddr 设置媒体地址（隧道建立后调用）。
+// localIP 是隧道内 IP（SDP 的 c= 行）；rtpPort 是 RTP 端口（0 用默认值）。
+// 必须在 Dial 前调用，否则 SDP 用 fallback 地址。
+func (a *Agent) SetMediaAddr(localIP string, rtpPort int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// 更新所有未来呼叫的默认配置
+	// 注意：进行中的呼叫不受影响（SDP 已发送）
+	a.cfg.LocalIP = localIP
+	a.cfg.RTPPort = rtpPort
+}
