@@ -92,6 +92,16 @@ func (r *Registrar) Register(ctx context.Context) error {
 		}
 		// 二维失败决策
 		decision := DecideFailure(res.StatusCode, headersToMap(res), 0, 1, true)
+		// reachedAuth 守卫：已到认证阶段，不再切换 P-CSCF
+		//（认证失败是变体/凭证问题，换 P-CSCF 无用）。
+		r.mu.RLock()
+		reachedAuth := r.reachedAuth
+		r.mu.RUnlock()
+		if reachedAuth && decision.AdvanceRegistrar {
+			r.log.Info("已到认证阶段，不切换 P-CSCF", "addr", addr, "reason", decision.Reason)
+			r.setState(StateFailed)
+			return fmt.Errorf("register: 认证失败 %d（%s），不切换 P-CSCF", res.StatusCode, decision.Reason)
+		}
 		switch {
 		case decision.AdvanceRegistrar:
 			r.penalize(addr)
@@ -177,6 +187,20 @@ func (r *Registrar) variantsForAttempt() []Variant {
 	if r.cfg.EAPRES != "" {
 		variants = append([]Variant{EAPDirectVariant()}, variants...)
 	}
+	// P1 变体学习：已学习的成功变体优先（O(1) 命中）
+	r.mu.RLock()
+	learned := r.learnedVariant
+	r.mu.RUnlock()
+	if learned != "" {
+		for i, v := range variants {
+			if v.Name == learned {
+				// 移到首位
+				variants = append([]Variant{v}, append(variants[:i], variants[i+1:]...)...)
+				r.log.Info("变体学习命中", "variant", learned)
+				break
+			}
+		}
+	}
 	// 未启用 fallback 时只用 base
 	if !r.cfg.EnableVariantFallback && len(variants) > 0 {
 		// 保留 eap_direct（如果有）+ base
@@ -189,6 +213,14 @@ func (r *Registrar) variantsForAttempt() []Variant {
 		variants = filtered
 	}
 	return variants
+}
+
+// learnVariant 记录成功的变体（P1 学习）。
+func (r *Registrar) learnVariant(name string) {
+	r.mu.Lock()
+	r.learnedVariant = name
+	r.mu.Unlock()
+	r.log.Info("学习成功变体", "variant", name)
 }
 
 // shouldTryNextVariant 判断状态码是否触发换变体。
@@ -210,6 +242,11 @@ func (r *Registrar) attemptVariant(ctx context.Context, addr string, v Variant) 
 	}
 
 	if res.StatusCode == 401 || res.StatusCode == 407 {
+		// 到达认证阶段：标记 reachedAuth，后续不再切换 P-CSCF
+		//（vowifi-core 生产经验：认证阶段的失败是变体/凭证问题，不是 P-CSCF 问题）。
+		r.mu.Lock()
+		r.reachedAuth = true
+		r.mu.Unlock()
 		res, err = r.handleChallenge(ctx, req, res)
 		if err != nil {
 			return nil, err
@@ -222,7 +259,36 @@ func (r *Registrar) attemptVariant(ctx context.Context, addr string, v Variant) 
 			return nil, err
 		}
 	}
+
+	// 成功：学习变体，保存 protected refresh 所需信息
+	if res.StatusCode == 200 {
+		r.learnVariant(v.Name)
+		r.saveRefreshState(req, res)
+	}
 	return res, nil
+}
+
+// saveRefreshState 保存 protected refresh 所需的状态。
+// 仅当请求带 Authorization 时保存（即已认证）。
+func (r *Registrar) saveRefreshState(req *sip.Request, res *sip.Response) {
+	authHeader := req.GetHeader("Authorization")
+	if authHeader == nil {
+		authHeader = req.GetHeader("Proxy-Authorization")
+	}
+	if authHeader == nil {
+		return // 未认证，不保存
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h := req.GetHeader("Call-ID"); h != nil {
+		r.lastCallID = h.Value()
+	}
+	if h := req.GetHeader("CSeq"); h != nil {
+		var seq int
+		fmt.Sscanf(h.Value(), "%d", &seq)
+		r.lastCSeq = seq
+	}
+	r.lastAuth = authHeader.Value()
 }
 
 // orderedAddrs 按 penalty 排序返回候选地址（penalty 低的优先）。

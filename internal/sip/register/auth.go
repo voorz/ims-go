@@ -81,6 +81,10 @@ func (r *Registrar) handleChallengeWithHistory(ctx context.Context, req *sip.Req
 	if err != nil {
 		return nil, fmt.Errorf("register: 认证后重发失败: %w", err)
 	}
+	// 保存 protected refresh 所需状态（从带认证的请求提取）
+	if res2.StatusCode == 200 {
+		r.saveRefreshState(authReq, res2)
+	}
 	// 多轮挑战：如果又是 401/407，递归处理（带轮数限制和指纹）
 	if res2.StatusCode == 401 || res2.StatusCode == 407 {
 		r.log.Info("收到多轮 AKA 挑战", "round", round+2)

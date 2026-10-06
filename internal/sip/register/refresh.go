@@ -58,22 +58,35 @@ func (r *Registrar) startRefresh(expiresSec int) {
 func (r *Registrar) refresh(ctx context.Context) error {
 	r.mu.RLock()
 	reg := r.reg
+	callID := r.lastCallID
+	cseq := r.lastCSeq
+	auth := r.lastAuth
 	r.mu.RUnlock()
 	if reg == nil {
 		return fmt.Errorf("未注册，无法刷新")
 	}
+	if callID == "" {
+		return fmt.Errorf("无 dialog 状态，无法 protected 刷新")
+	}
 
-	// 构造 protected REGISTER：同 Call-ID，CSeq 递增
-	// TODO: 需要 dialog 状态来复用 Call-ID；当前简化为带认证的重发
-	// vowifi-core 的做法：用上次成功的 Authorization 头直接重发
 	addr := r.orderedAddrs()
 	if len(addr) == 0 {
 		return fmt.Errorf("无可用 P-CSCF")
 	}
 
+	// 构造 protected REGISTER：同 Call-ID，CSeq 递增，复用 Authorization
 	req := r.buildRegister(r.cfg.Expires, addr[0], Variant{Name: "refresh"})
-	// TODO: 附加上次的 Authorization（protected）
-	// 当前先走完整流程，dialog 层完善后改为真正的 protected
+	// 替换 Call-ID 为保存的
+	req.RemoveHeader("Call-ID")
+	req.AppendHeader(sip.NewHeader("Call-ID", callID))
+	// CSeq 递增
+	req.RemoveHeader("CSeq")
+	req.AppendHeader(sip.NewHeader("CSeq", fmt.Sprintf("%d REGISTER", cseq+1)))
+	// 复用 Authorization（protected）
+	if auth != "" {
+		req.RemoveHeader("Authorization")
+		req.AppendHeader(sip.NewHeader("Authorization", auth))
+	}
 
 	res, err := transport.DoRequest(ctx, r.cfg.Client, req)
 	if err != nil {
@@ -82,12 +95,20 @@ func (r *Registrar) refresh(ctx context.Context) error {
 	if res.StatusCode == 401 || res.StatusCode == 407 {
 		// 401：认证失效，触发完整重注册
 		r.log.Info("刷新遇到 401，触发完整重注册")
+		// 清除保存的状态，下次走完整流程
+		r.mu.Lock()
+		r.lastCallID = ""
+		r.lastAuth = ""
+		r.mu.Unlock()
 		return r.Register(ctx)
 	}
 	if res.StatusCode != 200 {
 		return fmt.Errorf("刷新失败，状态码 %d", res.StatusCode)
 	}
-	// 更新过期时间
+	// 更新 CSeq 和过期时间
+	r.mu.Lock()
+	r.lastCSeq = cseq + 1
+	r.mu.Unlock()
 	if err := r.onRegistered(res); err != nil {
 		return err
 	}

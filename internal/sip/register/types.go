@@ -113,4 +113,15 @@ type Registrar struct {
 
 	// penalty 记录 P-CSCF 失败次数，用于选择排序
 	penalty map[string]int
+
+	// learnedVariant 是已学习的成功变体名（P1）。
+	// 下次 REGISTER 优先尝试，实现 O(1) 命中。
+	learnedVariant string
+	// reachedAuth 标记是否已到达认证阶段（收到 401/407）。
+	// 为 true 后不再切换 P-CSCF（vowifi-core 生产经验）。
+	reachedAuth bool
+	// lastCallID/lastCSeq/lastAuth 供 protected refresh 复用。
+	lastCallID string
+	lastCSeq   int
+	lastAuth   string
 }
