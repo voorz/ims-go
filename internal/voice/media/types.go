@@ -36,14 +36,20 @@ type RTPRelay struct {
 	cfg Config
 	log *slog.Logger
 
-	mu         sync.Mutex
-	conn       *net.UDPConn // LAN RTP
-	rtcpConn   *net.UDPConn // LAN RTCP（可选）
-	remote     *net.UDPAddr // IMS RTP 远端
-	remoteRTCP *net.UDPAddr // IMS RTCP 远端
-	enabled    bool
-	closed     chan struct{}
-	closeOnce  sync.Once
+	mu          sync.Mutex
+	conn        *net.UDPConn // 本地 RTP（收 LAN 和 IMS 双向）
+	rtcpConn    *net.UDPConn // 本地 RTCP（可选）
+	remote      *net.UDPAddr // IMS RTP 远端
+	remoteRTCP  *net.UDPAddr // IMS RTCP 远端
+	lanAddr     *net.UDPAddr // 学习到的 LAN 客户端地址（IMS→LAN 转发目标）
+	lanAddrRTCP *net.UDPAddr // LAN RTCP 地址（RTP 端口+1 推导）
+	enabled     bool
+	closed      chan struct{}
+	closeOnce   sync.Once
+
+	// 双向字节计数（vowifi-go 生产模型）
+	bytesIMSToLAN uint64
+	bytesLANToIMS uint64
 
 	monitor *RTPMonitor
 }

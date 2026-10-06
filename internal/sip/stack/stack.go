@@ -61,7 +61,9 @@ func New(cfg Config) (*Stack, error) {
 
 	// 4. 传输 Pipeline
 	s.pipeline = transport.New(transport.Config{
-		Logger: cfg.Logger,
+		Dialer:           cfg.Dialer,
+		OnConnectionLost: cfg.OnConnectionLost,
+		Logger:           cfg.Logger,
 	})
 
 	// 5. Registrar（REGISTER）
@@ -76,6 +78,7 @@ func New(cfg Config) (*Stack, error) {
 		EAPRES:                cfg.EAPRES,
 		EnableVariantFallback: true,
 		Client:                s.client,
+		VariantStore:          cfg.VariantStore,
 		OnStateChange:         cfg.OnRegisterState,
 		Logger:                cfg.Logger,
 	})
@@ -138,10 +141,16 @@ func (s *Stack) Start(ctx context.Context) error {
 	s.cancel = cancel
 	s.mu.Unlock()
 
-	// 1. 传输连接（Pipeline）
-	// 注意：Pipeline.Connect 需要 TransportLayer，实际由 sipgo 管理。
-	// 此处简化：Client 直接可用（sipgo 延迟拨号）。
-	s.log.Info("SIP 协议栈启动", "pcscf", s.cfg.PCSCFAddrs[0])
+	// 1. 传输连接（Pipeline）：预拨号到 P-CSCF，单连接复用（R1），
+	// 连接丢失触发 OnConnectionLost（R3）。
+	// 注意：Dialer 为 nil 时用 net.Dialer 直连（仅测试）；
+	// 生产需注入经 IPsec 隧道的 Dialer（P2）。
+	pcscfAddr := s.cfg.PCSCFAddrs[0]
+	if err := s.pipeline.Connect(ctx, s.ua.TransportLayer(), pcscfAddr); err != nil {
+		cancel()
+		return fmt.Errorf("stack: 传输连接 %s 失败: %w", pcscfAddr, err)
+	}
+	s.log.Info("SIP 传输已连接", "pcscf", pcscfAddr)
 
 	// 2. IMS REGISTER
 	if err := s.registrar.Register(ctx); err != nil {

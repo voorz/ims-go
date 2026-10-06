@@ -76,12 +76,23 @@ type Config struct {
 	HeaderOrder []string
 	// Client 是 sipgo 客户端（传输由 WS-6 Pipeline 注入）。
 	Client *sipgo.Client
+	// VariantStore 是变体学习持久化存储；nil 时仅内存学习（进程重启丢失）。
+	VariantStore VariantStore
 	// OnStateChange 状态变更回调。
 	OnStateChange func(from, to State)
 	// OnDecision 决策记录回调（P2：P-CSCF 选择）。
 	OnDecision func(d Decision)
 	// Logger 为空时用 slog 默认。
 	Logger *slog.Logger
+}
+
+// VariantStore 是 REGISTER 变体学习存储接口（P1 持久化）。
+// key 为 IMPU；value 为成功变体名。
+type VariantStore interface {
+	// LoadVariant 加载已学习的变体；不存在返回 ("", nil)。
+	LoadVariant(impu string) (string, error)
+	// SaveVariant 保存成功的变体。
+	SaveVariant(impu, variant string) error
 }
 
 // Decision 是一条 P-CSCF 选择决策记录（P2）。

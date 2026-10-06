@@ -48,6 +48,13 @@ type Config struct {
 	OnSubscribeState func(from, to subscribe.State)
 	// OnKeepaliveFailed：保活失败回调（触发重注册）。
 	OnKeepaliveFailed func()
+	// Dialer：传输预拨号器；nil 时用 net.Dialer 直连（仅测试）。
+	// 生产环境应注入经 IPsec 隧道接口的 Dialer（P2：与 SWu 隧道联动）。
+	Dialer transport.Dialer
+	// OnConnectionLost：传输连接丢失回调（R3）；nil 时仅日志。
+	OnConnectionLost func(addr string)
+	// VariantStore：REGISTER 变体学习持久化；nil 时仅内存。
+	VariantStore register.VariantStore
 	// Logger：为空用 slog 默认。
 	Logger *slog.Logger
 }

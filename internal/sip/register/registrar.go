@@ -19,12 +19,20 @@ func New(cfg Config) *Registrar {
 	if cfg.Expires <= 0 {
 		cfg.Expires = 600
 	}
-	return &Registrar{
+	r := &Registrar{
 		cfg:     cfg,
 		log:     cfg.Logger,
 		state:   StateUnregistered,
 		penalty: make(map[string]int),
 	}
+	// P1：从持久化存储加载已学习的变体
+	if cfg.VariantStore != nil && cfg.IMPU != "" {
+		if variant, err := cfg.VariantStore.LoadVariant(cfg.IMPU); err == nil && variant != "" {
+			r.learnedVariant = variant
+			r.log.Info("从存储加载已学习变体", "variant", variant)
+		}
+	}
+	return r
 }
 
 // State 返回当前注册状态。
@@ -71,61 +79,81 @@ func (r *Registrar) Register(ctx context.Context) error {
 
 	var tried []string
 	var lastErr error
+	const maxSameAddrRetries = 3
 	for _, addr := range addrs {
 		tried = append(tried, addr)
-		res, err := r.attempt(ctx, addr)
-		if err != nil {
-			// 网络错误：penalize 并换下一个
-			r.penalize(addr)
-			lastErr = err
-			r.log.Info("P-CSCF 尝试失败，切换", "addr", addr, "error", err)
-			continue
-		}
-		// 200：成功（先判断，不走失败决策）
-		if res.StatusCode == 200 {
-			if err := r.onRegistered(res); err != nil {
-				r.setState(StateFailed)
-				return err
+		// 同一 P-CSCF 可重试（Retry-After/423），上限 3 次
+		for retry := 0; retry < maxSameAddrRetries; retry++ {
+			res, err := r.attempt(ctx, addr)
+			if err != nil {
+				// 网络错误：penalize 并换下一个
+				r.penalize(addr)
+				lastErr = err
+				r.log.Info("P-CSCF 尝试失败，切换", "addr", addr, "error", err)
+				break // 跳出重试循环，换下一个 addr
 			}
-			r.emitDecision(addr, tried, "注册成功")
-			return nil
-		}
-		// 二维失败决策
-		decision := DecideFailure(res.StatusCode, headersToMap(res), 0, 1, true)
-		// reachedAuth 守卫：已到认证阶段，不再切换 P-CSCF
-		//（认证失败是变体/凭证问题，换 P-CSCF 无用）。
-		r.mu.RLock()
-		reachedAuth := r.reachedAuth
-		r.mu.RUnlock()
-		if reachedAuth && decision.AdvanceRegistrar {
-			r.log.Info("已到认证阶段，不切换 P-CSCF", "addr", addr, "reason", decision.Reason)
-			r.setState(StateFailed)
-			return fmt.Errorf("register: 认证失败 %d（%s），不切换 P-CSCF", res.StatusCode, decision.Reason)
-		}
-		switch {
-		case decision.AdvanceRegistrar:
-			r.penalize(addr)
-			lastErr = fmt.Errorf("P-CSCF %s: %s", addr, decision.Reason)
-			r.log.Info("切换 P-CSCF", "addr", addr, "reason", decision.Reason)
-			continue
-		case decision.RetryAfter > 0:
-			r.log.Info("等待后重试", "after", decision.RetryAfter, "reason", decision.Reason)
-			select {
-			case <-ctx.Done():
-				r.setState(StateFailed)
-				return ctx.Err()
-			case <-time.After(decision.RetryAfter):
+			// 200：成功（先判断，不走失败决策）
+			if res.StatusCode == 200 {
+				if err := r.onRegistered(res); err != nil {
+					r.setState(StateFailed)
+					return err
+				}
+				r.emitDecision(addr, tried, "注册成功")
+				return nil
 			}
-			// 重试当前 P-CSCF（简化：回到循环开头）
-			// TODO: 更精细的重试计数
-			continue
-		case decision.GiveUp:
+			// 305 Use-Proxy：用 Contact 指定的代理重试
+			if res.StatusCode == 305 {
+				if proxy := parseUseProxy(res); proxy != "" {
+					r.log.Info("305 Use-Proxy，切换代理", "proxy", proxy)
+					addr = proxy // 本轮继续用新代理
+					continue
+				}
+			}
+			// 423 Min-Expires：调整 expires 后重试当前 P-CSCF
+			if res.StatusCode == 423 {
+				if minExpires := parseMinExpires(headersToMap(res)); minExpires > 0 {
+					r.mu.Lock()
+					r.cfg.Expires = minExpires
+					r.mu.Unlock()
+					r.log.Info("423 Min-Expires，调整后重试", "expires", minExpires)
+					continue // 重试当前 addr
+				}
+			}
+			// 二维失败决策
+			decision := DecideFailure(res.StatusCode, headersToMap(res), 0, 1, true)
+			// reachedAuth 守卫：已到认证阶段，不再切换 P-CSCF
+			//（认证失败是变体/凭证问题，换 P-CSCF 无用）。
+			r.mu.RLock()
+			reachedAuth := r.reachedAuth
+			r.mu.RUnlock()
+			if reachedAuth && decision.AdvanceRegistrar {
+				r.log.Info("已到认证阶段，不切换 P-CSCF", "addr", addr, "reason", decision.Reason)
+				r.setState(StateFailed)
+				return fmt.Errorf("register: 认证失败 %d（%s），不切换 P-CSCF", res.StatusCode, decision.Reason)
+			}
+			switch {
+			case decision.AdvanceRegistrar:
+				r.penalize(addr)
+				lastErr = fmt.Errorf("P-CSCF %s: %s", addr, decision.Reason)
+				r.log.Info("切换 P-CSCF", "addr", addr, "reason", decision.Reason)
+				break // 跳出重试循环，换下一个 addr
+			case decision.RetryAfter > 0:
+				r.log.Info("等待后重试当前 P-CSCF", "addr", addr, "after", decision.RetryAfter, "reason", decision.Reason)
+				select {
+				case <-ctx.Done():
+					r.setState(StateFailed)
+					return ctx.Err()
+				case <-time.After(decision.RetryAfter):
+				}
+				continue // 重试当前 addr
+			case decision.GiveUp:
+				r.setState(StateFailed)
+				return fmt.Errorf("register: %s", decision.Reason)
+			}
+			// 未覆盖的状态码：失败
 			r.setState(StateFailed)
-			return fmt.Errorf("register: %s", decision.Reason)
+			return fmt.Errorf("register: 注册失败，状态码 %d %s", res.StatusCode, res.Reason)
 		}
-		// 未覆盖的状态码：失败
-		r.setState(StateFailed)
-		return fmt.Errorf("register: 注册失败，状态码 %d %s", res.StatusCode, res.Reason)
 	}
 	r.setState(StateFailed)
 	r.emitDecision("", tried, "全部 P-CSCF 失败")
@@ -215,12 +243,18 @@ func (r *Registrar) variantsForAttempt() []Variant {
 	return variants
 }
 
-// learnVariant 记录成功的变体（P1 学习）。
+// learnVariant 记录成功的变体（P1 学习）：内存 + 持久化。
 func (r *Registrar) learnVariant(name string) {
 	r.mu.Lock()
 	r.learnedVariant = name
 	r.mu.Unlock()
 	r.log.Info("学习成功变体", "variant", name)
+	// 持久化（失败不致命）
+	if r.cfg.VariantStore != nil && r.cfg.IMPU != "" {
+		if err := r.cfg.VariantStore.SaveVariant(r.cfg.IMPU, name); err != nil {
+			r.log.Warn("变体持久化失败", "error", err)
+		}
+	}
 }
 
 // shouldTryNextVariant 判断状态码是否触发换变体。

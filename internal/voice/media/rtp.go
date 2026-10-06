@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -110,10 +111,9 @@ func (r *RTPRelay) relayLoop() {
 		if n < 12 {
 			continue
 		}
-		// 判断方向：从远端（IMS）来的包 → LAN；否则 → IMS。
-		// 简化：本实例只处理 LAN→IMS（src 非 remote 即为 LAN 侧）。
 		r.mu.Lock()
 		remote := r.remote
+		lanAddr := r.lanAddr
 		enabled := r.enabled
 		r.mu.Unlock()
 		if !enabled {
@@ -123,25 +123,45 @@ func (r *RTPRelay) relayLoop() {
 		pkt := append([]byte(nil), buf[:n]...)
 		isFromIMS := remote != nil && src.IP.Equal(remote.IP) && src.Port == remote.Port
 		if isFromIMS {
-			// IMS→LAN：反向 PT 映射
+			// IMS→LAN：反向 PT 映射，转发给学习到的 LAN 客户端
 			if newPT, ok := r.cfg.ReversePTMap[pkt[1]&0x7F]; ok {
 				pkt[1] = (pkt[1] & 0x80) | newPT
 			}
-			r.monitor.UpdateIMS()
-			// 回送给 LAN 侧（此处简化：实际应有 LAN 目标地址）。
-			// 双实例模型中，IMS→LAN 由另一个方向的 relay 处理。
-			// 单实例模式下暂不转发 IMS 来的包（避免环路）。
+			if r.monitor != nil {
+				r.monitor.UpdateIMS()
+			}
+			atomic.AddUint64(&r.bytesIMSToLAN, uint64(len(pkt)))
+			if lanAddr != nil {
+				_, _ = r.conn.WriteToUDP(pkt, lanAddr)
+			} else {
+				r.log.Debug("IMS→LAN：LAN 地址未学习，丢弃", "src", src)
+			}
 			continue
 		}
-		// LAN→IMS：正向 PT 映射
+		// LAN→IMS：学习 LAN 客户端地址，正向 PT 映射
+		r.mu.Lock()
+		if r.lanAddr == nil {
+			r.lanAddr = src
+			r.lanAddrRTCP = &net.UDPAddr{IP: src.IP, Port: src.Port + 1}
+			r.log.Debug("学习到 LAN 客户端地址", "addr", src)
+		}
+		r.mu.Unlock()
 		if newPT, ok := r.cfg.PTMap[pkt[1]&0x7F]; ok {
 			pkt[1] = (pkt[1] & 0x80) | newPT
 		}
-		r.monitor.UpdateLAN()
+		if r.monitor != nil {
+			r.monitor.UpdateLAN()
+		}
+		atomic.AddUint64(&r.bytesLANToIMS, uint64(len(pkt)))
 		if remote != nil {
 			_, _ = r.conn.WriteToUDP(pkt, remote)
 		}
 	}
+}
+
+// Stats 返回双向字节计数。
+func (r *RTPRelay) Stats() (imsToLAN, lanToIMS uint64) {
+	return atomic.LoadUint64(&r.bytesIMSToLAN), atomic.LoadUint64(&r.bytesLANToIMS)
 }
 
 // rtcpLoop RTCP 转发循环（最小实现：透传 + 保活）。

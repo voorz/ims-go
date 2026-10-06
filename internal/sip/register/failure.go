@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	sip "github.com/emiago/sipgo/sip"
 )
 
 // DecideFailure 对 REGISTER 失败做二维决策。
@@ -100,4 +102,21 @@ func isTemporaryFailure(code int) bool {
 	default:
 		return false
 	}
+}
+
+// parseUseProxy 从 305 响应的 Contact 头提取代理地址。
+func parseUseProxy(res *sip.Response) string {
+	h := res.GetHeader("Contact")
+	if h == nil {
+		return ""
+	}
+	// Contact: <sip:proxy.example.com> 或 <sip:proxy.example.com:5060>
+	val := strings.TrimSpace(h.Value())
+	val = strings.Trim(val, "<>")
+	// 去掉 sip: 前缀和参数
+	if idx := strings.Index(val, ";"); idx > 0 {
+		val = val[:idx]
+	}
+	val = strings.TrimPrefix(val, "sip:")
+	return val
 }
