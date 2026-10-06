@@ -38,17 +38,27 @@ func New(cfg Config) *SMS {
 
 // Send 发送 MO 短信（分片、队列、重试、投递状态机）。
 func (s *SMS) Send(ctx context.Context, to, text string) (string, error) {
+	return s.SendWithEncoding(ctx, to, text, "")
+}
+
+// SendWithEncoding 发送短信，可指定编码（"ucs2" 强制 UCS2，空/auto 自动选择）。
+func (s *SMS) SendWithEncoding(ctx context.Context, to, text, encoding string) (string, error) {
 	id := fmt.Sprintf("sms-%d", time.Now().UnixNano())
 	msg := Message{
-		ID:   id,
-		From: s.cfg.IMPU,
-		To:   to,
-		Text: text,
-		At:   time.Now(),
+		ID:       id,
+		From:     s.cfg.IMPU,
+		To:       to,
+		Text:     text,
+		Encoding: encoding,
+		At:       time.Now(),
 	}
 
 	// 编码（自动分片）
-	tpdus, err := smscodec.BuildSubmitTPDUObjectsWithOptions(to, text, smscodec.SubmitOptions{})
+	opts := smscodec.SubmitOptions{}
+	if enc, err := smscodec.NormalizeSMSEncoding(encoding); err == nil {
+		opts.Encoding = enc
+	}
+	tpdus, err := smscodec.BuildSubmitTPDUObjectsWithOptions(to, text, opts)
 	if err != nil {
 		return "", fmt.Errorf("sms: PDU 编码失败: %w", err)
 	}

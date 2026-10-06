@@ -29,6 +29,14 @@ func New(cfg Config) (*Client, error) {
 		}
 		cfg.Modules.SIP = sipMod
 	}
+	// SMS 默认装配（需 SIP 栈；Store 可选）。
+	if cfg.Modules.SMS == nil && cfg.Modules.SIP != nil {
+		smsMod, err := newDefaultSMS(cfg, cfg.Modules.SIP)
+		if err == nil {
+			cfg.Modules.SMS = smsMod
+		}
+		// 非 stack.Stack 时跳过（消费者自备 SIP 实现时自备 SMS）
+	}
 	c := &Client{
 		cfg:      cfg,
 		disp:     newDispatcher(),
@@ -256,6 +264,30 @@ func (c *Client) SendUSSD(ctx context.Context, code string) (*USSDResult, error)
 		return nil, ErrNoUSSDModule
 	}
 	return m.Send(ctx, code)
+}
+
+// ContinueUSSD 回复当前 USSD 会话（菜单交互）。
+func (c *Client) ContinueUSSD(ctx context.Context, input string) (*USSDResult, error) {
+	if c.state.Load() != int32(lcRunning) {
+		return nil, ErrNotRunning
+	}
+	m := c.cfg.Modules.USSD
+	if m == nil {
+		return nil, ErrNoUSSDModule
+	}
+	return m.Continue(ctx, input)
+}
+
+// CancelUSSD 取消当前 USSD 会话。
+func (c *Client) CancelUSSD(ctx context.Context) error {
+	if c.state.Load() != int32(lcRunning) {
+		return ErrNotRunning
+	}
+	m := c.cfg.Modules.USSD
+	if m == nil {
+		return ErrNoUSSDModule
+	}
+	return m.Cancel(ctx)
 }
 
 // Voice 返回语音网关访问器。

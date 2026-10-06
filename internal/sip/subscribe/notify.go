@@ -105,25 +105,6 @@ func (s *Subscriber) dispatchLoop() {
 	}
 }
 
-// reginfoXML 对应 RFC 3680 的 reginfo 文档（简化子集）。
-type reginfoXML struct {
-	XMLName xml.Name `xml:"reginfo"`
-	Version string   `xml:"version,attr"`
-	Regs    []regXML `xml:"registration"`
-}
-
-type regXML struct {
-	AOR      string       `xml:"aor,attr"`
-	State    string       `xml:"state,attr"`
-	Contacts []contactXML `xml:"contact"`
-}
-
-type contactXML struct {
-	URI   string `xml:"uri,attr"`
-	State string `xml:"state,attr"`
-	Event string `xml:"event,attr"`
-}
-
 // parseRegInfo 解析 reginfo XML。
 func parseRegInfo(body []byte) (*RegInfo, error) {
 	var doc reginfoXML

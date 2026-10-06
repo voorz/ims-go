@@ -213,3 +213,9 @@ func (s *Stack) Subscriber() *subscribe.Subscriber { return s.subscriber }
 
 // Dialogs 返回 dialog 注册表。
 func (s *Stack) Dialogs() *dialog.Registry { return s.dialogs }
+
+// SIPClient 返回内部 sipgo 客户端（供 SMS/USSD 等模块复用传输）。
+func (s *Stack) SIPClient() *sipgo.Client { return s.client }
+
+// SIPServer 返回内部 sipgo 服务端（供 SMS/USSD 等模块注册入站处理）。
+func (s *Stack) SIPServer() *sipgo.Server { return s.server }

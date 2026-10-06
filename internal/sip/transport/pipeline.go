@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"sync"
 
 	"github.com/emiago/sipgo"
 	sipsdk "github.com/emiago/sipgo/sip"
@@ -68,13 +67,6 @@ func (p *Pipeline) Close() error {
 	return nil
 }
 
-// callbackConn 包装 net.Conn，在 EOF/Close 时触发一次 onLost（R3）。
-type callbackConn struct {
-	net.Conn
-	onLost func()
-	once   sync.Once
-}
-
 func (c *callbackConn) fire() {
 	c.once.Do(func() {
 		if c.onLost != nil {
@@ -94,15 +86,6 @@ func (c *callbackConn) Read(b []byte) (int, error) {
 func (c *callbackConn) Close() error {
 	c.fire()
 	return c.Conn.Close()
-}
-
-// singleConnListener 是只产生一个预拨号连接的 net.Listener（R1）。
-type singleConnListener struct {
-	conn      net.Conn
-	addr      net.Addr
-	once      sync.Once
-	closed    chan struct{}
-	closeOnce sync.Once
 }
 
 func (l *singleConnListener) ensureClosed() chan struct{} {

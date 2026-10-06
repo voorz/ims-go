@@ -44,12 +44,13 @@ func (s DeliveryStatus) String() string {
 
 // Message 是一条短信。
 type Message struct {
-	ID     string
-	From   string
-	To     string
-	Text   string
-	At     time.Time
-	Concat ConcatRef // 分片引用（长短信）
+	ID       string
+	From     string
+	To       string
+	Text     string
+	Encoding string // "auto" 或 "ucs2"；空视为 auto
+	At       time.Time
+	Concat   ConcatRef // 分片引用（长短信）
 }
 
 // ConcatRef 标识长短信分片。

@@ -1,6 +1,11 @@
 package ims
 
 import (
+	"context"
+
+	sipsdk "github.com/emiago/sipgo/sip"
+
+	"github.com/voorz/ims-go/internal/sip/inbound"
 	"github.com/voorz/ims-go/internal/voice"
 )
 
@@ -36,4 +41,37 @@ func mapVoiceConfig(cfg VoiceConfig) voice.Config {
 		out.NoAnswerTimeout = cfg.NoAnswerTimeout
 	}
 	return out
+}
+
+// incomingCallAdapter 将公开 IncomingCallHandler 适配为内部 inbound.VoiceRequestHandler。
+type incomingCallAdapter struct {
+	h IncomingCallHandler
+}
+
+func (a *incomingCallAdapter) HandleInvite(req *sipsdk.Request, tx sipsdk.ServerTransaction) bool {
+	if a.h == nil {
+		return false
+	}
+	from := ""
+	if h := req.GetHeader("From"); h != nil {
+		from = h.Value()
+	}
+	callID := ""
+	if h := req.GetHeader("Call-ID"); h != nil {
+		callID = h.Value()
+	}
+	return a.h.HandleIncomingCall(context.Background(), from, callID)
+}
+
+func (a *incomingCallAdapter) HandleBye(req *sipsdk.Request, tx sipsdk.ServerTransaction) bool {
+	// BYE 由内部状态机处理，公开回调只关心来电
+	return false
+}
+
+// toInboundHandler 将 VoiceConfig.OnIncomingCall 转为内部 handler（nil 安全）。
+func toInboundHandler(h IncomingCallHandler) inbound.VoiceRequestHandler {
+	if h == nil {
+		return nil
+	}
+	return &incomingCallAdapter{h: h}
 }

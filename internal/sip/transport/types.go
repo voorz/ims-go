@@ -12,6 +12,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -52,4 +53,20 @@ type NetDialer struct {
 
 func (d NetDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return d.Dialer.DialContext(ctx, network, address)
+}
+
+// callbackConn 包装 net.Conn，在 EOF/Close 时触发一次 onLost（R3）。
+type callbackConn struct {
+	net.Conn
+	onLost func()
+	once   sync.Once
+}
+
+// singleConnListener 是只产生一个预拨号连接的 net.Listener（R1）。
+type singleConnListener struct {
+	conn      net.Conn
+	addr      net.Addr
+	once      sync.Once
+	closed    chan struct{}
+	closeOnce sync.Once
 }

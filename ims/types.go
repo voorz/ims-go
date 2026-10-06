@@ -20,12 +20,20 @@ type Config struct {
 	SIM       SIMConfig
 	SWu       SWuConfig
 	SIP       SIPConfig
+	SMS       SMSConfig
 	Voice     VoiceConfig
 	Carrier   CarrierConfig
 	Dataplane DataplaneConfig
 	Logging   LoggingConfig
 	Recovery  RecoveryPolicy
 	Modules   Modules
+}
+
+// SMSConfig：短信配置（WS-8）。
+type SMSConfig struct {
+	// Store 是投递存储；nil 时用内存实现（进程重启丢失）。
+	// 主项目可实现 SMSDeliveryStore 做持久化（如 SQLite）。
+	Store SMSDeliveryStore
 }
 
 // SIMConfig：SIM/AKA 相关配置。
@@ -163,6 +171,18 @@ type VoiceConfig struct {
 	DisableSessionTimer bool
 	// NoAnswerTimeout 是未接听超时；0 用默认 60s。
 	NoAnswerTimeout time.Duration
+	// OnIncomingCall 是入站呼叫回调（H1）。
+	// 为 nil 时，若装配了语音模块则由内部处理；主项目可实现 IncomingCallHandler 接管。
+	OnIncomingCall IncomingCallHandler
+}
+
+// IncomingCallHandler 处理入站语音呼叫（H1 桥接的公开契约）。
+// 相比内部 inbound.VoiceRequestHandler，本接口只暴露主项目需要的语义，
+// 不涉及 sipgo 事务对象。
+type IncomingCallHandler interface {
+	// HandleIncomingCall 收到入站 INVITE 时调用。
+	// from 是主叫标识，callID 是呼叫 ID；返回 true 表示接管（库不再做默认处理）。
+	HandleIncomingCall(ctx context.Context, from, callID string) bool
 }
 
 // CarrierConfig：运营商覆盖（WS-13 内部模型的公开子集）。
@@ -253,6 +273,10 @@ type SMSModule interface {
 type USSDModule interface {
 	Module
 	Send(ctx context.Context, code string) (*USSDResult, error)
+	// Continue 回复当前 USSD 会话的菜单/输入（交互式 USSD 必需）。
+	Continue(ctx context.Context, input string) (*USSDResult, error)
+	// Cancel 取消当前 USSD 会话。
+	Cancel(ctx context.Context) error
 }
 
 // VoiceModule：语音能力。
@@ -344,6 +368,38 @@ type DecisionRecord struct {
 type SMSRequest struct {
 	To   string
 	Text string
+	// Encoding 是短信编码："auto"（默认，按内容自动选择）或 "ucs2"（强制 UCS2）。
+	// 中文/emoji 必须用 UCS2；纯 ASCII 用 auto 即可（GSM7 更省字节）。
+	Encoding string
+}
+
+// SMSDeliveryStatus 是短信投递状态。
+type SMSDeliveryStatus int
+
+const (
+	SMSStatusQueued    SMSDeliveryStatus = iota // 已入队
+	SMSStatusSending                            // 发送中
+	SMSStatusSent                               // 已发送（等待回执）
+	SMSStatusDelivered                          // 已投递
+	SMSStatusFailed                             // 失败
+)
+
+// SMSDeliveryRecord 是短信投递记录。
+type SMSDeliveryRecord struct {
+	MessageID string
+	To        string
+	Status    SMSDeliveryStatus
+	Attempts  int
+	At        time.Time
+	Error     string
+}
+
+// SMSDeliveryStore 是短信投递存储接口（主项目实现持久化，如 SQLite）。
+// 不实现时库用内存存储（进程重启丢失）。
+type SMSDeliveryStore interface {
+	Save(ctx context.Context, rec SMSDeliveryRecord) error
+	Get(ctx context.Context, messageID string) (SMSDeliveryRecord, error)
+	UpdateStatus(ctx context.Context, messageID string, status SMSDeliveryStatus, errMsg string) error
 }
 
 // SMSResult：短信发送结果。
@@ -383,6 +439,7 @@ var (
 	ErrNoSMSModule    = errors.New("ims: SMS 模块未配置")
 	ErrNoUSSDModule   = errors.New("ims: USSD 模块未配置")
 	ErrNoVoiceModule  = errors.New("ims: 语音模块未配置")
+	errSMSNoSIP       = errors.New("ims: SMS 需要 SIP 栈（internal）")
 )
 
 // ==================== Redaction ====================

@@ -25,6 +25,7 @@ func newDefaultSIP(cfg Config) (Module, error) {
 		RegisterExpires:  cfg.SIP.RegisterExpires,
 		SubscribeExpires: cfg.SIP.SubscribeExpires,
 		EAPRES:           cfg.SIP.EAPRES,
+		VoiceHandler:     toInboundHandler(cfg.Voice.OnIncomingCall),
 	}
 	// AKA：与 SWu 共用（D-015）。
 	switch {
