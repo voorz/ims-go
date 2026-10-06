@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/emiago/sipgo/sip"
@@ -57,6 +58,15 @@ func (s *Subscriber) setState(to State) {
 
 // Subscribe 发起 SUBSCRIBE（独立 Call-ID，继承 Security-Verify）。
 func (s *Subscriber) Subscribe(ctx context.Context) error {
+	return s.subscribeWithRetry(ctx, 0)
+}
+
+// subscribeWithRetry 带重建计数，防止 481 无限递归。
+func (s *Subscriber) subscribeWithRetry(ctx context.Context, rebuildCount int) error {
+	if rebuildCount > 2 {
+		s.setState(StateFailed)
+		return fmt.Errorf("subscribe: 481 重建超过上限")
+	}
 	s.setState(StateSubscribing)
 
 	s.mu.Lock()
@@ -71,14 +81,58 @@ func (s *Subscriber) Subscribe(ctx context.Context) error {
 		s.setState(StateFailed)
 		return fmt.Errorf("subscribe: SUBSCRIBE 失败: %w", err)
 	}
-	if res.StatusCode != 200 {
+	// P0 修复：接受 200 和 202（RFC 3265 明确允许 202 Accepted）
+	if res.StatusCode != 200 && res.StatusCode != 202 {
+		// 481：订阅不存在，重建初始订阅（vowifi-go 生产做法）
+		if res.StatusCode == 481 {
+			s.log.Info("收到 481，重建初始订阅")
+			s.setState(StateIdle)
+			// 重置 dialog 状态，重建
+			s.mu.Lock()
+			s.callID = ""
+			s.mu.Unlock()
+			return s.subscribeWithRetry(ctx, rebuildCount+1)
+		}
+		// 403/405/489：永久拒绝，不重试（vowifi-go）
+		if res.StatusCode == 403 || res.StatusCode == 405 || res.StatusCode == 489 {
+			s.setState(StateFailed)
+			return fmt.Errorf("subscribe: 永久拒绝，状态码 %d，不重试", res.StatusCode)
+		}
 		s.setState(StateFailed)
 		return fmt.Errorf("subscribe: 订阅失败，状态码 %d", res.StatusCode)
+	}
+	// P0 修复：解析 Subscription-State，感知 terminated/pending
+	if state := parseSubscriptionState(res); state == "terminated" {
+		s.setState(StateFailed)
+		return fmt.Errorf("subscribe: 订阅被终止 (Subscription-State: terminated)")
 	}
 
 	s.setState(StateActive)
 	s.startRefresh()
 	return nil
+}
+
+// parseSubscriptionStateFromRequest 从请求解析 Subscription-State。
+// 格式：active;expires=3600 或 terminated;reason=timeout。
+func parseSubscriptionStateFromRequest(req *sip.Request) string {
+	return parseSubscriptionStateHeader(req.GetHeader("Subscription-State"))
+}
+
+// parseSubscriptionState 从响应解析 Subscription-State。
+func parseSubscriptionState(res *sip.Response) string {
+	return parseSubscriptionStateHeader(res.GetHeader("Subscription-State"))
+}
+
+// parseSubscriptionStateHeader 解析 Subscription-State 头值，返回 active/pending/terminated/""。
+func parseSubscriptionStateHeader(h sip.Header) string {
+	if h == nil {
+		return ""
+	}
+	val := h.Value()
+	if idx := strings.Index(val, ";"); idx > 0 {
+		val = val[:idx]
+	}
+	return strings.TrimSpace(strings.ToLower(val))
 }
 
 // Unsubscribe 取消订阅（Expires: 0）。
@@ -98,10 +152,12 @@ func (s *Subscriber) Resubscribe(ctx context.Context) error {
 
 // buildSubscribe 构造 SUBSCRIBE 请求。
 func (s *Subscriber) buildSubscribe(expires int) *sip.Request {
-	s.mu.RLock()
+	s.mu.Lock()
 	callID := s.callID
 	localTag := s.localTag
-	s.mu.RUnlock()
+	cseq := s.cseq
+	s.cseq++
+	s.mu.Unlock()
 
 	recipient := sip.Uri{Host: s.cfg.IMPU}
 	recipient.UriParams = sip.HeaderParams{{K: "transport", V: "tcp"}}
@@ -110,6 +166,8 @@ func (s *Subscriber) buildSubscribe(expires int) *sip.Request {
 
 	// Call-ID（独立）
 	req.AppendHeader(sip.NewHeader("Call-ID", callID))
+	// CSeq（P0 修复：之前递增但从未写入，sipgo 填随机值导致 dialog 内不单调）
+	req.AppendHeader(sip.NewHeader("CSeq", fmt.Sprintf("%d SUBSCRIBE", cseq)))
 	// From（带本地 tag）
 	from := &sip.FromHeader{
 		Address: sip.Uri{User: s.cfg.IMPU},
@@ -134,9 +192,6 @@ func (s *Subscriber) buildSubscribe(expires int) *sip.Request {
 	}
 	req.AppendHeader(sip.NewHeader("Content-Length", "0"))
 
-	s.mu.Lock()
-	s.cseq++
-	s.mu.Unlock()
 	return req
 }
 
@@ -148,7 +203,10 @@ func (s *Subscriber) startRefresh() {
 	s.cancel = cancel
 	s.mu.Unlock()
 
-	interval := time.Duration(s.cfg.Expires/2) * time.Second
+	// vowifi-go 做法：expires - 30s 缓冲（而不是 expires/2）。
+	// expires/2 对 3600 是 1800s，太早重订浪费资源；-30s 精确。
+	advance := 30 * time.Second
+	interval := time.Duration(s.cfg.Expires)*time.Second - advance
 	if interval < 60*time.Second {
 		interval = 60 * time.Second
 	}

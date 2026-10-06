@@ -91,8 +91,10 @@ type RegContact struct {
 
 // MWI 是消息等待指示。
 type MWI struct {
-	Waiting bool
-	Account string
+	Waiting  bool
+	Account  string
+	VoiceNew int // 新语音留言数（Voice-Message 头）
+	VoiceOld int // 旧语音留言数
 }
 
 // Subscriber 管理 SUBSCRIBE 生命周期。
