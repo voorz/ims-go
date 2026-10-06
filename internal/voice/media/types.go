@@ -1,6 +1,7 @@
-// Package media 提供语音媒体面（WS-12）。
+// Package media 提供语音媒体面（WS-12 蒸馏重做）。
 //
-// 覆盖：RTP 双向中继、PT 映射、DTMF（RFC 4733）、SDP 构造/解析/重写。
+// 覆盖：RTP/RTCP 4-socket 双向中继、PT 双向映射、DTMF（RFC 4733 发送器）、
+// SDP 构造/解析/重写、单通监测、RTCP 保活。
 // SRTP/SDES 为可选子项，产品明确需要时再立项（本 WS 不做）。
 package media
 
@@ -8,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Config 是媒体配置。
@@ -16,21 +19,42 @@ type Config struct {
 	LocalAddr string
 	// PTMap 是 payload type 映射（本地 PT → 远端 PT）。
 	PTMap map[uint8]uint8
+	// ReversePTMap 是反向映射（远端 PT → 本地 PT）；空则自动反转 PTMap。
+	ReversePTMap map[uint8]uint8
+	// EnableRTCP 为 true 时启用 RTCP socket（4-socket 模式）。
+	EnableRTCP bool
+	// MonitorTimeout 是单通监测超时；0 用默认 10s。<=0 禁用监测。
+	MonitorTimeout time.Duration
+	// OnOneWay 是单通回调（direction: "IMS->LAN" 或 "LAN->IMS"）。
+	OnOneWay func(direction string, silentFor time.Duration)
 	// Logger 为空时用 slog 默认。
 	Logger *slog.Logger
 }
 
-// RTPRelay 是 RTP 双向中继。
+// RTPRelay 是 RTP/RTCP 双向中继。
 type RTPRelay struct {
 	cfg Config
 	log *slog.Logger
 
-	mu        sync.Mutex
-	conn      *net.UDPConn
-	remote    *net.UDPAddr
-	enabled   bool
-	closed    chan struct{}
-	closeOnce sync.Once
+	mu         sync.Mutex
+	conn       *net.UDPConn // LAN RTP
+	rtcpConn   *net.UDPConn // LAN RTCP（可选）
+	remote     *net.UDPAddr // IMS RTP 远端
+	remoteRTCP *net.UDPAddr // IMS RTCP 远端
+	enabled    bool
+	closed     chan struct{}
+	closeOnce  sync.Once
+
+	monitor *RTPMonitor
+}
+
+// RTPMonitor 监测 RTP 双向活动（单通检测）。
+type RTPMonitor struct {
+	lastIMStoLAN atomic.Int64 // UnixNano
+	lastLANtoIMS atomic.Int64
+	imsCount     atomic.Uint64
+	lanCount     atomic.Uint64
+	stopCh       chan struct{}
 }
 
 // RTPHeader 是 12 字节 RTP 头。

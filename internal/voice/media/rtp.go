@@ -5,12 +5,20 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 )
 
 // NewRTPRelay 创建 RTP 中继（监听本地端口）。
 func NewRTPRelay(cfg Config) (*RTPRelay, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	// 补全反向 PT 映射
+	if len(cfg.ReversePTMap) == 0 && len(cfg.PTMap) > 0 {
+		cfg.ReversePTMap = make(map[uint8]uint8, len(cfg.PTMap))
+		for k, v := range cfg.PTMap {
+			cfg.ReversePTMap[v] = k
+		}
 	}
 	addr, err := net.ResolveUDPAddr("udp", cfg.LocalAddr)
 	if err != nil {
@@ -20,29 +28,67 @@ func NewRTPRelay(cfg Config) (*RTPRelay, error) {
 	if err != nil {
 		return nil, fmt.Errorf("media: 监听失败: %w", err)
 	}
-	return &RTPRelay{
+	r := &RTPRelay{
 		cfg:    cfg,
 		log:    cfg.Logger,
 		conn:   conn,
 		closed: make(chan struct{}),
-	}, nil
+	}
+	// RTCP socket（RTP 端口 +1）
+	if cfg.EnableRTCP {
+		rtcpAddr := &net.UDPAddr{
+			IP:   conn.LocalAddr().(*net.UDPAddr).IP,
+			Port: conn.LocalAddr().(*net.UDPAddr).Port + 1,
+		}
+		if rtcpConn, err := net.ListenUDP("udp", rtcpAddr); err == nil {
+			r.rtcpConn = rtcpConn
+		} else {
+			r.log.Warn("RTCP 监听失败（继续无 RTCP 模式）", "error", err)
+		}
+	}
+	// 单通监测
+	if cfg.MonitorTimeout > 0 {
+		r.monitor = NewRTPMonitor()
+		r.monitor.StartOneWayMonitor(cfg.MonitorTimeout, cfg.OnOneWay)
+	}
+	return r, nil
 }
 
-// LocalAddr 返回本地监听地址。
+// LocalAddr 返回本地 RTP 监听地址。
 func (r *RTPRelay) LocalAddr() *net.UDPAddr {
 	return r.conn.LocalAddr().(*net.UDPAddr)
 }
 
-// SetRemote 设置远端地址并启用转发。
+// RTCPLocalAddr 返回本地 RTCP 监听地址（未启用时 nil）。
+func (r *RTPRelay) RTCPLocalAddr() *net.UDPAddr {
+	if r.rtcpConn == nil {
+		return nil
+	}
+	return r.rtcpConn.LocalAddr().(*net.UDPAddr)
+}
+
+// SetRemote 设置 IMS 远端地址并启用转发。
 func (r *RTPRelay) SetRemote(addr *net.UDPAddr) {
 	r.mu.Lock()
 	r.remote = addr
+	// RTCP 远端默认为 RTP 远端端口 +1
+	if addr != nil {
+		r.remoteRTCP = &net.UDPAddr{IP: addr.IP, Port: addr.Port + 1}
+	}
 	r.enabled = true
 	r.mu.Unlock()
 	go r.relayLoop()
+	if r.rtcpConn != nil {
+		go r.rtcpLoop()
+	}
 }
 
+// Monitor 返回监测器（可为 nil）。
+func (r *RTPRelay) Monitor() *RTPMonitor { return r.monitor }
+
 // relayLoop 转发循环：收包 → PT 映射改写 → 发往远端。
+// 方向：LAN→IMS（本地收到的包发往 IMS）。
+// IMS→LAN 方向由对端 relay 实例处理（双实例模型）。
 func (r *RTPRelay) relayLoop() {
 	buf := make([]byte, 2048)
 	for {
@@ -51,7 +97,7 @@ func (r *RTPRelay) relayLoop() {
 			return
 		default:
 		}
-		n, _, err := r.conn.ReadFromUDP(buf)
+		n, src, err := r.conn.ReadFromUDP(buf)
 		if err != nil {
 			select {
 			case <-r.closed:
@@ -64,23 +110,95 @@ func (r *RTPRelay) relayLoop() {
 		if n < 12 {
 			continue
 		}
-		// PT 映射改写
+		// 判断方向：从远端（IMS）来的包 → LAN；否则 → IMS。
+		// 简化：本实例只处理 LAN→IMS（src 非 remote 即为 LAN 侧）。
+		r.mu.Lock()
+		remote := r.remote
+		enabled := r.enabled
+		r.mu.Unlock()
+		if !enabled {
+			continue
+		}
+
 		pkt := append([]byte(nil), buf[:n]...)
+		isFromIMS := remote != nil && src.IP.Equal(remote.IP) && src.Port == remote.Port
+		if isFromIMS {
+			// IMS→LAN：反向 PT 映射
+			if newPT, ok := r.cfg.ReversePTMap[pkt[1]&0x7F]; ok {
+				pkt[1] = (pkt[1] & 0x80) | newPT
+			}
+			r.monitor.UpdateIMS()
+			// 回送给 LAN 侧（此处简化：实际应有 LAN 目标地址）。
+			// 双实例模型中，IMS→LAN 由另一个方向的 relay 处理。
+			// 单实例模式下暂不转发 IMS 来的包（避免环路）。
+			continue
+		}
+		// LAN→IMS：正向 PT 映射
 		if newPT, ok := r.cfg.PTMap[pkt[1]&0x7F]; ok {
 			pkt[1] = (pkt[1] & 0x80) | newPT
 		}
-		r.mu.Lock()
-		remote := r.remote
-		r.mu.Unlock()
+		r.monitor.UpdateLAN()
 		if remote != nil {
 			_, _ = r.conn.WriteToUDP(pkt, remote)
 		}
 	}
 }
 
+// rtcpLoop RTCP 转发循环（最小实现：透传 + 保活）。
+func (r *RTPRelay) rtcpLoop() {
+	buf := make([]byte, 2048)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.closed:
+			return
+		case <-ticker.C:
+			// RTCP 保活：定期发送空 RR（防止 NAT 超时）。
+			r.sendRTCPKeealive()
+		default:
+		}
+		_ = r.rtcpConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, _, err := r.rtcpConn.ReadFromUDP(buf)
+		if err != nil {
+			continue
+		}
+		if n < 4 {
+			continue
+		}
+		// RTCP 透传到对端
+		r.mu.Lock()
+		remoteRTCP := r.remoteRTCP
+		r.mu.Unlock()
+		if remoteRTCP != nil {
+			_, _ = r.rtcpConn.WriteToUDP(buf[:n], remoteRTCP)
+		}
+	}
+}
+
+// sendRTCPKeealive 发送 RTCP 保活（空 Receiver Report）。
+func (r *RTPRelay) sendRTCPKeealive() {
+	r.mu.Lock()
+	remoteRTCP := r.remoteRTCP
+	enabled := r.enabled
+	r.mu.Unlock()
+	if !enabled || remoteRTCP == nil || r.rtcpConn == nil {
+		return
+	}
+	// 最小 RR：V=2, PT=201, length=1, SSRC=0
+	pkt := []byte{0x80, 0xC9, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}
+	_, _ = r.rtcpConn.WriteToUDP(pkt, remoteRTCP)
+}
+
 // Close 关闭中继。
 func (r *RTPRelay) Close() error {
 	r.closeOnce.Do(func() { close(r.closed) })
+	if r.monitor != nil {
+		r.monitor.Stop()
+	}
+	if r.rtcpConn != nil {
+		_ = r.rtcpConn.Close()
+	}
 	return r.conn.Close()
 }
 
