@@ -88,6 +88,26 @@ type Call struct {
 	Direction string // "outgoing" / "incoming"
 	RemoteURI string
 	At        time.Time
+
+	// Dialog 状态（INVITE 建立后填充）
+	CallID       string
+	LocalTag     string
+	RemoteTag    string
+	RemoteTarget string
+	CSeq         uint32
+
+	// 补充业务状态
+	LocalHold  bool // 本地 hold
+	RemoteHold bool // 远端 hold
+
+	// Session Timer（RFC 4028）
+	SessionExpires   int    // 秒；0 表示未协商
+	SessionRefresher string // "uac" / "uas"
+	SessionTimer     *time.Timer
+
+	// 媒体
+	SDP       string // 本地 SDP
+	RemoteSDP string // 远端 SDP
 }
 
 // Config 是 Agent 配置。

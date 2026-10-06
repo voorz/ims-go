@@ -122,6 +122,18 @@ func (a *Agent) Dial(ctx context.Context, to string) (string, error) {
 		_ = a.transition(callID, StateEarlyMedia)
 	case res.StatusCode == 200:
 		_ = a.transition(callID, StateConnected)
+		// Session Timer（RFC 4028）：从 200 OK 解析 Session-Expires
+		done2 := make(chan struct{})
+		ca.do(func() {
+			defer close(done2)
+			if expires, refresher := parseSessionExpires(res); expires > 0 {
+				a.startSessionTimer(ca.call, expires, refresher)
+			} else {
+				// IR.92 特例：无头则 fallback 1800，我是 refresher
+				a.startSessionTimer(ca.call, 1800, "uac")
+			}
+		})
+		<-done2
 		// 发送 ACK（简化）
 	default:
 		_ = a.transition(callID, StateTerminating)
@@ -147,6 +159,8 @@ func (a *Agent) Hangup(ctx context.Context, callID string) error {
 	done := make(chan struct{})
 	ca.do(func() {
 		defer close(done)
+		// 停 Session Timer
+		a.stopSessionTimer(ca.call)
 		recipient := sip.Uri{Host: ca.call.RemoteURI}
 		recipient.UriParams = sip.HeaderParams{{K: "transport", V: "tcp"}}
 		req := sip.NewRequest(sip.BYE, recipient)
