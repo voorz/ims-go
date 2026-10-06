@@ -57,6 +57,10 @@ func New(cfg Config) (*Client, error) {
 			return nil, err
 		}
 		cfg.Modules.Tunnel = tunnel
+		slog.Info("ims: SWu 隧道模块已装配", "epdg_addrs", cfg.SWu.EPDGAddrs, "imsi_set", cfg.SWu.IMSI != "")
+	} else if cfg.Modules.Tunnel == nil {
+		slog.Warn("ims: SWu 隧道模块未装配（EPDGAddrs 为空且 IMSI 为空），隧道不会建立",
+			"epdg_addrs", cfg.SWu.EPDGAddrs, "imsi_set", cfg.SWu.IMSI != "", "mcc", cfg.SWu.MCC, "mnc", cfg.SWu.MNC)
 	}
 	if cfg.Modules.SIP == nil && sipConfigured(cfg.SIP) {
 		sipMod, err := newDefaultSIP(cfg)
@@ -64,6 +68,10 @@ func New(cfg Config) (*Client, error) {
 			return nil, err
 		}
 		cfg.Modules.SIP = sipMod
+		slog.Info("ims: SIP 模块已装配", "pcscf_addrs", cfg.SIP.PCSCFAddrs, "impu_set", cfg.SIP.IMPU != "")
+	} else if cfg.Modules.SIP == nil {
+		slog.Warn("ims: SIP 模块未装配（PCSCFAddrs 为空且 IMPU 为空），IMS 注册不会进行",
+			"pcscf_addrs", cfg.SIP.PCSCFAddrs, "impu_set", cfg.SIP.IMPU != "")
 	}
 	// SMS 默认装配（需 SIP 栈；Store 可选）。
 	if cfg.Modules.SMS == nil && cfg.Modules.SIP != nil {
@@ -151,7 +159,12 @@ func (c *Client) Start(ctx context.Context) error {
 	c.startedAt = time.Now()
 	c.mu.Unlock()
 
-	for _, s := range c.slots() {
+	slots := c.slots()
+	slog.Info("ims: 客户端启动", "modules", len(slots))
+	for i, s := range slots {
+		slog.Info("ims: 启动模块", "index", i, "name", s.name)
+	}
+	for _, s := range slots {
 		c.wg.Add(1)
 		go c.supervise(s)
 	}
