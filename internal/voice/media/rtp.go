@@ -9,7 +9,9 @@ import (
 	"time"
 )
 
-// NewRTPRelay 创建 RTP 中继（监听本地端口）。
+// NewRTPRelay 创建 RTP 中继（四 socket 模型）。
+// cfg.LocalAddr：IMS 侧 RTP 监听地址
+// cfg.LANAddr：LAN 侧 RTP 监听地址（空则用 LocalAddr+2）
 func NewRTPRelay(cfg Config) (*RTPRelay, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -21,30 +23,61 @@ func NewRTPRelay(cfg Config) (*RTPRelay, error) {
 			cfg.ReversePTMap[v] = k
 		}
 	}
-	addr, err := net.ResolveUDPAddr("udp", cfg.LocalAddr)
+	// IMS 侧 RTP
+	imsAddr, err := net.ResolveUDPAddr("udp", cfg.LocalAddr)
 	if err != nil {
-		return nil, fmt.Errorf("media: 解析地址失败: %w", err)
+		return nil, fmt.Errorf("media: 解析 IMS 地址失败: %w", err)
 	}
-	conn, err := net.ListenUDP("udp", addr)
+	imsRTP, err := net.ListenUDP("udp", imsAddr)
 	if err != nil {
-		return nil, fmt.Errorf("media: 监听失败: %w", err)
+		return nil, fmt.Errorf("media: IMS RTP 监听失败: %w", err)
 	}
+	// LAN 侧 RTP（默认 IMS 端口+2，避免冲突）
+	lanAddrStr := cfg.LANAddr
+	if lanAddrStr == "" {
+		lanAddrStr = fmt.Sprintf("%s:%d",
+			imsRTP.LocalAddr().(*net.UDPAddr).IP.String(),
+			imsRTP.LocalAddr().(*net.UDPAddr).Port+2)
+	}
+	lanAddr, err := net.ResolveUDPAddr("udp", lanAddrStr)
+	if err != nil {
+		imsRTP.Close()
+		return nil, fmt.Errorf("media: 解析 LAN 地址失败: %w", err)
+	}
+	lanRTP, err := net.ListenUDP("udp", lanAddr)
+	if err != nil {
+		imsRTP.Close()
+		return nil, fmt.Errorf("media: LAN RTP 监听失败: %w", err)
+	}
+
 	r := &RTPRelay{
 		cfg:    cfg,
 		log:    cfg.Logger,
-		conn:   conn,
+		imsRTP: imsRTP,
+		lanRTP: lanRTP,
 		closed: make(chan struct{}),
 	}
-	// RTCP socket（RTP 端口 +1）
+	// RTCP sockets（RTP 端口+1，各侧独立）
 	if cfg.EnableRTCP {
-		rtcpAddr := &net.UDPAddr{
-			IP:   conn.LocalAddr().(*net.UDPAddr).IP,
-			Port: conn.LocalAddr().(*net.UDPAddr).Port + 1,
+		// IMS RTCP
+		imsRTCPAddr := &net.UDPAddr{
+			IP:   imsRTP.LocalAddr().(*net.UDPAddr).IP,
+			Port: imsRTP.LocalAddr().(*net.UDPAddr).Port + 1,
 		}
-		if rtcpConn, err := net.ListenUDP("udp", rtcpAddr); err == nil {
-			r.rtcpConn = rtcpConn
+		if c, err := net.ListenUDP("udp", imsRTCPAddr); err == nil {
+			r.imsRTCP = c
 		} else {
-			r.log.Warn("RTCP 监听失败（继续无 RTCP 模式）", "error", err)
+			r.log.Warn("IMS RTCP 监听失败", "error", err)
+		}
+		// LAN RTCP
+		lanRTCPAddr := &net.UDPAddr{
+			IP:   lanRTP.LocalAddr().(*net.UDPAddr).IP,
+			Port: lanRTP.LocalAddr().(*net.UDPAddr).Port + 1,
+		}
+		if c, err := net.ListenUDP("udp", lanRTCPAddr); err == nil {
+			r.lanRTCP = c
+		} else {
+			r.log.Warn("LAN RTCP 监听失败", "error", err)
 		}
 	}
 	// 单通监测
@@ -52,36 +85,50 @@ func NewRTPRelay(cfg Config) (*RTPRelay, error) {
 		r.monitor = NewRTPMonitor()
 		r.monitor.StartOneWayMonitor(cfg.MonitorTimeout, cfg.OnOneWay)
 	}
+	// 启动双向转发
+	go r.imsToLANLoop()
+	go r.lanToIMSLoop()
+	if r.imsRTCP != nil {
+		go r.rtcpLoop(r.imsRTCP, true)
+	}
+	if r.lanRTCP != nil {
+		go r.rtcpLoop(r.lanRTCP, false)
+	}
 	return r, nil
 }
 
-// LocalAddr 返回本地 RTP 监听地址。
+// LocalAddr 返回 IMS 侧 RTP 监听地址。
 func (r *RTPRelay) LocalAddr() *net.UDPAddr {
-	return r.conn.LocalAddr().(*net.UDPAddr)
+	return r.imsRTP.LocalAddr().(*net.UDPAddr)
 }
 
-// RTCPLocalAddr 返回本地 RTCP 监听地址（未启用时 nil）。
+// LANAddr 返回 LAN 侧 RTP 监听地址。
+func (r *RTPRelay) LANAddr() *net.UDPAddr {
+	return r.lanRTP.LocalAddr().(*net.UDPAddr)
+}
+
+// RTCPLocalAddr 返回 IMS 侧 RTCP 监听地址（未启用时 nil）。
 func (r *RTPRelay) RTCPLocalAddr() *net.UDPAddr {
-	if r.rtcpConn == nil {
+	if r.imsRTCP == nil {
 		return nil
 	}
-	return r.rtcpConn.LocalAddr().(*net.UDPAddr)
+	return r.imsRTCP.LocalAddr().(*net.UDPAddr)
 }
 
 // SetRemote 设置 IMS 远端地址并启用转发。
 func (r *RTPRelay) SetRemote(addr *net.UDPAddr) {
 	r.mu.Lock()
-	r.remote = addr
-	// RTCP 远端默认为 RTP 远端端口 +1
-	if addr != nil {
-		r.remoteRTCP = &net.UDPAddr{IP: addr.IP, Port: addr.Port + 1}
-	}
+	r.imsAddr = addr
 	r.enabled = true
 	r.mu.Unlock()
-	go r.relayLoop()
-	if r.rtcpConn != nil {
-		go r.rtcpLoop()
-	}
+	// loops 已在 NewRTPRelay 启动
+}
+
+// SetLANAddr 手动设置 LAN 目标地址（不学习时用）。
+func (r *RTPRelay) SetLANAddr(addr *net.UDPAddr) {
+	r.mu.Lock()
+	r.lanAddr = addr
+	r.mu.Unlock()
 }
 
 // Monitor 返回监测器（可为 nil）。
@@ -90,7 +137,8 @@ func (r *RTPRelay) Monitor() *RTPMonitor { return r.monitor }
 // relayLoop 转发循环：收包 → PT 映射改写 → 发往远端。
 // 方向：LAN→IMS（本地收到的包发往 IMS）。
 // IMS→LAN 方向由对端 relay 实例处理（双实例模型）。
-func (r *RTPRelay) relayLoop() {
+// imsToLANLoop：IMS→LAN 转发（从 imsRTP 读，发往 lanAddr）。
+func (r *RTPRelay) imsToLANLoop() {
 	buf := make([]byte, 2048)
 	for {
 		select {
@@ -98,13 +146,13 @@ func (r *RTPRelay) relayLoop() {
 			return
 		default:
 		}
-		n, src, err := r.conn.ReadFromUDP(buf)
+		n, _, err := r.imsRTP.ReadFromUDP(buf)
 		if err != nil {
 			select {
 			case <-r.closed:
 				return
 			default:
-				r.log.Warn("RTP 读取失败", "error", err)
+				r.log.Warn("IMS RTP 读取失败", "error", err)
 				continue
 			}
 		}
@@ -112,40 +160,62 @@ func (r *RTPRelay) relayLoop() {
 			continue
 		}
 		r.mu.Lock()
-		remote := r.remote
 		lanAddr := r.lanAddr
 		enabled := r.enabled
 		r.mu.Unlock()
-		if !enabled {
+		if !enabled || lanAddr == nil {
 			continue
 		}
-
 		pkt := append([]byte(nil), buf[:n]...)
-		isFromIMS := remote != nil && src.IP.Equal(remote.IP) && src.Port == remote.Port
-		if isFromIMS {
-			// IMS→LAN：反向 PT 映射，转发给学习到的 LAN 客户端
-			if newPT, ok := r.cfg.ReversePTMap[pkt[1]&0x7F]; ok {
-				pkt[1] = (pkt[1] & 0x80) | newPT
+		// 反向 PT 映射
+		if newPT, ok := r.cfg.ReversePTMap[pkt[1]&0x7F]; ok {
+			pkt[1] = (pkt[1] & 0x80) | newPT
+		}
+		if r.monitor != nil {
+			r.monitor.UpdateIMS()
+		}
+		atomic.AddUint64(&r.bytesIMSToLAN, uint64(len(pkt)))
+		_, _ = r.lanRTP.WriteToUDP(pkt, lanAddr)
+	}
+}
+
+// lanToIMSLoop：LAN→IMS 转发（从 lanRTP 读，发往 imsAddr）。
+// LAN 地址学习：首包源地址即为 LAN 客户端。
+func (r *RTPRelay) lanToIMSLoop() {
+	buf := make([]byte, 2048)
+	for {
+		select {
+		case <-r.closed:
+			return
+		default:
+		}
+		n, src, err := r.lanRTP.ReadFromUDP(buf)
+		if err != nil {
+			select {
+			case <-r.closed:
+				return
+			default:
+				r.log.Warn("LAN RTP 读取失败", "error", err)
+				continue
 			}
-			if r.monitor != nil {
-				r.monitor.UpdateIMS()
-			}
-			atomic.AddUint64(&r.bytesIMSToLAN, uint64(len(pkt)))
-			if lanAddr != nil {
-				_, _ = r.conn.WriteToUDP(pkt, lanAddr)
-			} else {
-				r.log.Debug("IMS→LAN：LAN 地址未学习，丢弃", "src", src)
-			}
+		}
+		if n < 12 {
 			continue
 		}
-		// LAN→IMS：学习 LAN 客户端地址，正向 PT 映射
 		r.mu.Lock()
+		imsAddr := r.imsAddr
+		enabled := r.enabled
+		// 学习 LAN 地址（首包）
 		if r.lanAddr == nil {
 			r.lanAddr = src
-			r.lanAddrRTCP = &net.UDPAddr{IP: src.IP, Port: src.Port + 1}
 			r.log.Debug("学习到 LAN 客户端地址", "addr", src)
 		}
 		r.mu.Unlock()
+		if !enabled || imsAddr == nil {
+			continue
+		}
+		pkt := append([]byte(nil), buf[:n]...)
+		// 正向 PT 映射
 		if newPT, ok := r.cfg.PTMap[pkt[1]&0x7F]; ok {
 			pkt[1] = (pkt[1] & 0x80) | newPT
 		}
@@ -153,9 +223,7 @@ func (r *RTPRelay) relayLoop() {
 			r.monitor.UpdateLAN()
 		}
 		atomic.AddUint64(&r.bytesLANToIMS, uint64(len(pkt)))
-		if remote != nil {
-			_, _ = r.conn.WriteToUDP(pkt, remote)
-		}
+		_, _ = r.imsRTP.WriteToUDP(pkt, imsAddr)
 	}
 }
 
@@ -164,8 +232,9 @@ func (r *RTPRelay) Stats() (imsToLAN, lanToIMS uint64) {
 	return atomic.LoadUint64(&r.bytesIMSToLAN), atomic.LoadUint64(&r.bytesLANToIMS)
 }
 
-// rtcpLoop RTCP 转发循环（最小实现：透传 + 保活）。
-func (r *RTPRelay) rtcpLoop() {
+// rtcpLoop RTCP 转发循环（四 socket：按方向透传）。
+// isIMS 为 true 时是 IMS 侧 RTCP（收 IMS → 发 LAN），否则反之。
+func (r *RTPRelay) rtcpLoop(conn *net.UDPConn, isIMS bool) {
 	buf := make([]byte, 2048)
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -174,12 +243,11 @@ func (r *RTPRelay) rtcpLoop() {
 		case <-r.closed:
 			return
 		case <-ticker.C:
-			// RTCP 保活：定期发送空 RR（防止 NAT 超时）。
-			r.sendRTCPKeealive()
+			r.sendRTCPKeealive(conn, isIMS)
 		default:
 		}
-		_ = r.rtcpConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, _, err := r.rtcpConn.ReadFromUDP(buf)
+		_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			continue
 		}
@@ -188,38 +256,63 @@ func (r *RTPRelay) rtcpLoop() {
 		}
 		// RTCP 透传到对端
 		r.mu.Lock()
-		remoteRTCP := r.remoteRTCP
+		var target *net.UDPAddr
+		var targetConn *net.UDPConn
+		if isIMS {
+			target = r.lanAddr
+			if target != nil {
+				target = &net.UDPAddr{IP: target.IP, Port: target.Port + 1}
+			}
+			targetConn = r.lanRTCP
+		} else {
+			target = r.imsAddr
+			if target != nil {
+				target = &net.UDPAddr{IP: target.IP, Port: target.Port + 1}
+			}
+			targetConn = r.imsRTCP
+		}
+		enabled := r.enabled
 		r.mu.Unlock()
-		if remoteRTCP != nil {
-			_, _ = r.rtcpConn.WriteToUDP(buf[:n], remoteRTCP)
+		if enabled && target != nil && targetConn != nil {
+			_, _ = targetConn.WriteToUDP(buf[:n], target)
 		}
 	}
 }
 
 // sendRTCPKeealive 发送 RTCP 保活（空 Receiver Report）。
-func (r *RTPRelay) sendRTCPKeealive() {
+func (r *RTPRelay) sendRTCPKeealive(conn *net.UDPConn, isIMS bool) {
 	r.mu.Lock()
-	remoteRTCP := r.remoteRTCP
+	var target *net.UDPAddr
+	if isIMS {
+		target = r.lanAddr
+	} else {
+		target = r.imsAddr
+	}
 	enabled := r.enabled
 	r.mu.Unlock()
-	if !enabled || remoteRTCP == nil || r.rtcpConn == nil {
+	if !enabled || target == nil {
 		return
 	}
+	target = &net.UDPAddr{IP: target.IP, Port: target.Port + 1}
 	// 最小 RR：V=2, PT=201, length=1, SSRC=0
 	pkt := []byte{0x80, 0xC9, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}
-	_, _ = r.rtcpConn.WriteToUDP(pkt, remoteRTCP)
+	_, _ = conn.WriteToUDP(pkt, target)
 }
 
-// Close 关闭中继。
+// Close 关闭中继（四 socket 全关）。
 func (r *RTPRelay) Close() error {
 	r.closeOnce.Do(func() { close(r.closed) })
 	if r.monitor != nil {
 		r.monitor.Stop()
 	}
-	if r.rtcpConn != nil {
-		_ = r.rtcpConn.Close()
+	if r.imsRTCP != nil {
+		_ = r.imsRTCP.Close()
 	}
-	return r.conn.Close()
+	if r.lanRTCP != nil {
+		_ = r.lanRTCP.Close()
+	}
+	_ = r.lanRTP.Close()
+	return r.imsRTP.Close()
 }
 
 // ParseRTPHeader 解析 RTP 头。

@@ -15,8 +15,10 @@ import (
 
 // Config 是媒体配置。
 type Config struct {
-	// LocalAddr 是本地 RTP 监听地址；空则自动选择。
+	// LocalAddr 是 IMS 侧 RTP 监听地址；空则自动选择。
 	LocalAddr string
+	// LANAddr 是 LAN 侧 RTP 监听地址；空则用 LocalAddr 端口+2。
+	LANAddr string
 	// PTMap 是 payload type 映射（本地 PT → 远端 PT）。
 	PTMap map[uint8]uint8
 	// ReversePTMap 是反向映射（远端 PT → 本地 PT）；空则自动反转 PTMap。
@@ -36,16 +38,22 @@ type RTPRelay struct {
 	cfg Config
 	log *slog.Logger
 
-	mu          sync.Mutex
-	conn        *net.UDPConn // 本地 RTP（收 LAN 和 IMS 双向）
-	rtcpConn    *net.UDPConn // 本地 RTCP（可选）
-	remote      *net.UDPAddr // IMS RTP 远端
-	remoteRTCP  *net.UDPAddr // IMS RTCP 远端
-	lanAddr     *net.UDPAddr // 学习到的 LAN 客户端地址（IMS→LAN 转发目标）
-	lanAddrRTCP *net.UDPAddr // LAN RTCP 地址（RTP 端口+1 推导）
-	enabled     bool
-	closed      chan struct{}
-	closeOnce   sync.Once
+	mu sync.Mutex
+	// 四 socket 模型（vowifi-go 生产架构）：
+	//   imsRTP/imxRTCP：IMS 侧（收 IMS，发往 LAN）
+	//   lanRTP/lanRTCP：LAN 侧（收 LAN，发往 IMS）
+	// 职责分离：无地址学习歧义，独立生命周期，NAT 友好。
+	imsRTP  *net.UDPConn
+	lanRTP  *net.UDPConn
+	imsRTCP *net.UDPConn // 可选
+	lanRTCP *net.UDPConn // 可选
+
+	imsAddr *net.UDPAddr // IMS RTP 远端（发往 IMS 的目标）
+	lanAddr *net.UDPAddr // LAN RTP 远端（发往 LAN 的目标，学习或配置）
+
+	enabled   bool
+	closed    chan struct{}
+	closeOnce sync.Once
 
 	// 双向字节计数（vowifi-go 生产模型）
 	bytesIMSToLAN uint64

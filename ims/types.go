@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"regexp"
 	"sync"
 	"sync/atomic"
@@ -151,6 +152,27 @@ type SIPConfig struct {
 	SubscribeExpires int
 	// EAPRES 是 SWu 阶段 EAP-AKA 的 RES（可选，启用 EAP 直接认证）。
 	EAPRES string
+	// Dialer 是传输预拨号器（经 IPsec 隧道）；nil 时用 net.Dialer 直连（仅测试）。
+	// 生产环境应注入经隧道接口的 Dialer。
+	Dialer Dialer
+	// VariantStore 是 REGISTER 变体学习持久化；nil 时仅内存学习（进程重启丢失）。
+	VariantStore VariantStore
+}
+
+// Dialer 通过底层网络（隧道内）拨号。
+// 与 internal/sip/transport.Dialer 同构，公开以便用户注入。
+type Dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// VariantStore 是 REGISTER 变体学习存储接口。
+// 与 internal/sip/register.VariantStore 同构，公开以便用户注入持久化。
+// key 为 IMPU；value 为成功变体名。
+type VariantStore interface {
+	// LoadVariant 加载已学习的变体；不存在返回 ("", nil)。
+	LoadVariant(impu string) (string, error)
+	// SaveVariant 保存成功的变体。
+	SaveVariant(impu, variant string) error
 }
 
 // VoiceConfig：语音用户偏好（WS-11）。

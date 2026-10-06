@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/emiago/sipgo/sip"
 
+	"github.com/voorz/ims-go/internal/emergency"
 	"github.com/voorz/ims-go/internal/sip/dialog"
 	"github.com/voorz/ims-go/internal/sip/transport"
 )
@@ -102,6 +104,10 @@ func (a *Agent) Dial(ctx context.Context, to string) (string, error) {
 	// RFC 3312：precondition（Wi-Fi 资源恒可用，走形式满足 IR.51）
 	req.AppendHeader(sip.NewHeader("Require", "precondition"))
 	req.AppendHeader(sip.NewHeader("Supported", "precondition"))
+	// 紧急呼叫：Priority: emergency（TS 24.229）
+	if strings.HasPrefix(strings.ToLower(to), "urn:service:sos") {
+		req.AppendHeader(sip.NewHeader("Priority", "emergency"))
+	}
 	// SDP（含 precondition 属性，对象模型构造）
 	sdp := a.buildInviteSDP()
 	req.SetBody([]byte(sdp))
@@ -311,4 +317,33 @@ func (a *Agent) Answer(ctx context.Context, callID, sdp string) error {
 	})
 	<-done
 	return err
+}
+
+// DialEmergency 拨打紧急呼叫（3GPP TS 24.229）。
+// 使用 urn:service:sos + Priority: emergency 头。
+// 紧急呼叫不要求预先 REGISTER（网络必须接受）。
+func (a *Agent) DialEmergency(ctx context.Context, destination string) (string, error) {
+	urn := emergency.ServiceURNFor(destination)
+	if urn == "" {
+		return "", fmt.Errorf("voice: 非紧急号码: %s", destination)
+	}
+	// 紧急呼叫：直接 Dial 到 URN，带 emergency 优先级
+	callID, err := a.Dial(ctx, urn)
+	if err != nil {
+		return "", err
+	}
+	// 标记为紧急（通过 Call 的 RemoteURI 已是 URN，状态机同普通呼叫）
+	a.mu.RLock()
+	ca, ok := a.calls[callID]
+	a.mu.RUnlock()
+	if ok {
+		ca.do(func() {
+			// 紧急呼叫不启动 no-answer timer（网络侧会处理）
+			if ca.call.noAnswerTimer != nil {
+				ca.call.noAnswerTimer.Stop()
+				ca.call.noAnswerTimer = nil
+			}
+		})
+	}
+	return callID, nil
 }
