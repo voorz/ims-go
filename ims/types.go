@@ -576,6 +576,11 @@ var (
 	errUSSDNoSIP      = errors.New("ims: USSD 需要 SIP 栈（internal）")
 )
 
+// ErrSyncFailure 表示 AKA 同步失败（AUTN 序列号失步）。
+// 对标 vowifi-core engine/sim.ErrSyncFailure，供迁移使用。
+// 检测：errors.Is(err, ims.ErrSyncFailure)。
+var ErrSyncFailure = sim.ErrSyncFailure
+
 // ==================== SIP 错误码归因（A8） ====================
 
 // SIPErrorHints 将 SIP 错误码映射到参数嫌疑提示（A8）。
