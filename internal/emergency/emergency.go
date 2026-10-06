@@ -85,12 +85,6 @@ func emergencyDigits(value string) string {
 	return digits.String()
 }
 
-// Policy 是紧急呼叫策略（默认禁用）。
-type Policy struct {
-	// Enabled 显式 opt-in 后为 true。
-	Enabled bool
-}
-
 // Check 检查目的地；禁用时返回 ErrOriginatingDisabled。
 func (p Policy) Check(destination string) error {
 	if IsEmergencyDestination(destination) && !p.Enabled {

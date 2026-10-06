@@ -143,3 +143,11 @@ type callActor struct {
 	ch   chan func()
 	done chan struct{}
 }
+
+// Bridge 实现 inbound.VoiceRequestHandler（H1：入站桥接一等能力）。
+//
+// 入站 INVITE → 创建 incoming Call → 回调 OnIncomingCall →
+// 消费方决定接听/拒绝。消灭消费方手写 B2BUA。
+type Bridge struct {
+	agent *Agent
+}

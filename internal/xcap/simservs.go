@@ -8,60 +8,6 @@ import (
 
 const simservsNamespace = "http://uri.etsi.org/ngn/params/xml/simservs/xcap"
 
-type Document struct {
-	XMLName xml.Name `xml:"simservs"`
-	XMLNS   string   `xml:"xmlns,attr"`
-	OIR     *OIR     `xml:"originating-identity-presentation-restriction"`
-	CDIV    *CDIV    `xml:"communication-diversion"`
-	ICB     *Barring `xml:"incoming-communication-barring"`
-	OCB     *Barring `xml:"outgoing-communication-barring"`
-	Raw     []byte   `xml:"-"`
-	ETag    string   `xml:"-"`
-	XUI     string   `xml:"-"`
-}
-
-type OIR struct {
-	Active           bool   `xml:"active,attr"`
-	DefaultBehaviour string `xml:"default-behaviour"`
-}
-
-type CDIV struct {
-	Active       bool  `xml:"active,attr"`
-	NoReplyTimer int   `xml:"NoReplyTimer"`
-	Rules        Rules `xml:"ruleset"`
-}
-
-type Barring struct {
-	Active bool `xml:"active,attr"`
-}
-
-type Rules struct {
-	XMLName xml.Name `xml:"ruleset"`
-	XMLNS   string   `xml:"xmlns,attr"`
-	Rules   []Rule   `xml:"rule"`
-}
-
-type Rule struct {
-	ID         string     `xml:"id,attr"`
-	Conditions Conditions `xml:"conditions"`
-	Actions    Actions    `xml:"actions"`
-}
-
-type Conditions struct {
-	Busy          *struct{} `xml:"busy"`
-	NoAnswer      *struct{} `xml:"no-answer"`
-	NotReachable  *struct{} `xml:"not-reachable"`
-	Unconditional *struct{} `xml:"unconditional"`
-}
-
-type Actions struct {
-	ForwardTo *ForwardTo `xml:"forward-to"`
-}
-
-type ForwardTo struct {
-	Target string `xml:"target"`
-}
-
 func ParseSimservs(raw []byte, etag, xui string) (Document, error) {
 	var doc Document
 	if err := xml.Unmarshal(raw, &doc); err != nil {

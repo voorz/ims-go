@@ -484,20 +484,26 @@ func (r *Registrar) buildInitialAuth(v Variant) sip.Header {
 	}
 }
 
-// onRegistered 处理 200 OK：解析 Expires/GRUU，启动刷新定时器。
+// onRegistered 处理 200 OK：解析 Expires/GRUU/Security-Server，启动刷新定时器。
 func (r *Registrar) onRegistered(res *sip.Response) error {
 	expires := r.cfg.Expires
 	if h := res.GetHeader("Expires"); h != nil {
 		// 简化：用配置值；实际应解析
 	}
 	gruu, tempGRUU := parseGRUU(res)
+	// Security-Server：SUBSCRIBE 继承用
+	securityServer := ""
+	if h := res.GetHeader("Security-Server"); h != nil {
+		securityServer = h.Value()
+	}
 
 	r.mu.Lock()
 	r.reg = &Registration{
-		Expires:   time.Now().Add(time.Duration(expires) * time.Second),
-		ExpiresIn: expires,
-		GRUU:      gruu,
-		TempGRUU:  tempGRUU,
+		Expires:        time.Now().Add(time.Duration(expires) * time.Second),
+		ExpiresIn:      expires,
+		GRUU:           gruu,
+		TempGRUU:       tempGRUU,
+		SecurityServer: securityServer,
 	}
 	r.mu.Unlock()
 

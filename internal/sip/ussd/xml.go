@@ -11,14 +11,6 @@ import (
 	"strings"
 )
 
-// XMLPayload 是 USSD XML 信封（对象化，非 string 拼）。
-type XMLPayload struct {
-	XMLName    xml.Name `xml:"ussd-data"`
-	Xmlns      string   `xml:"xmlns,attr"`
-	Language   string   `xml:"language"`
-	USSDString string   `xml:"ussd-string"`
-}
-
 // EncodeXML 编码 USSD 字符串为 XML。
 func EncodeXML(text, language string) ([]byte, error) {
 	text = strings.TrimSpace(text)

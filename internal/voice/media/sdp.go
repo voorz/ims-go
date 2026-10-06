@@ -6,21 +6,6 @@ import (
 	"strings"
 )
 
-// SDP 是简化的 SDP 对象模型。
-type SDP struct {
-	Connection string // c= 行的地址
-	Media      []SDPMedia
-}
-
-// SDPMedia 是一路媒体。
-type SDPMedia struct {
-	Type    string // "audio"
-	Port    int
-	Proto   string   // "RTP/AVP"
-	Formats []string // PT 列表
-	Attrs   map[string]string
-}
-
 // ParseSDP 解析 SDP（简化，只取 c= 和 m=）。
 func ParseSDP(s string) (*SDP, error) {
 	sdp := &SDP{}

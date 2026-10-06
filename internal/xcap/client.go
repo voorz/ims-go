@@ -24,18 +24,7 @@ var (
 )
 
 // Transport is the HTTP round-tripper that should run over the XCAP PDN.
-type Transport = http.RoundTripper
-
-type Client struct {
-	HTTP   *http.Client
-	Host   string
-	Domain string
-	// OnNet is true when the HTTP client dials the IMS/XCAP PDN. 23.003
-	// 13.9.1 then uses xcap.<ims-domain> (no .pub) so operator DNS can
-	// answer. The .pub name is for the public Internet.
-	OnNet bool
-}
-
+// (类型别名，定义在 types.go，门禁③)
 func RootURI(host, domain, xui string) string {
 	return rootURI(host, domain, xui, false)
 }

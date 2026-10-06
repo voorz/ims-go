@@ -53,7 +53,11 @@ gate3() {
     local m
     m=$(grep -n '^type [A-Z]' "$f" || true)
     if [ -n "$m" ]; then hits+="${f}:\n${m}\n"; fi
-  done < <(find ims internal/sim -name '*.go')
+  done < <(find ims internal -name '*.go' \
+    -not -path 'internal/swu/*' \
+    -not -path 'internal/netplane/*' \
+    -not -path 'internal/dns/*' \
+    -not -path 'internal/sip/sms/codec/*')
   if [ -n "$hits" ]; then printf '%b' "$hits"; return 1; fi
 }
 

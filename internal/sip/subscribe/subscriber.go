@@ -43,6 +43,13 @@ func (s *Subscriber) State() State {
 	return s.state
 }
 
+// SetSecurityVerify 更新 Security-Verify（REGISTER 成功后继承）。
+func (s *Subscriber) SetSecurityVerify(v string) {
+	s.mu.Lock()
+	s.cfg.SecurityVerify = v
+	s.mu.Unlock()
+}
+
 func (s *Subscriber) setState(to State) {
 	s.mu.Lock()
 	from := s.state
@@ -187,8 +194,11 @@ func (s *Subscriber) buildSubscribe(expires int) *sip.Request {
 	// Accept
 	req.AppendHeader(sip.NewHeader("Accept", "application/reginfo+xml"))
 	// Security-Verify（从 REGISTER 继承）
-	if s.cfg.SecurityVerify != "" {
-		req.AppendHeader(sip.NewHeader("Security-Verify", s.cfg.SecurityVerify))
+	s.mu.RLock()
+	securityVerify := s.cfg.SecurityVerify
+	s.mu.RUnlock()
+	if securityVerify != "" {
+		req.AppendHeader(sip.NewHeader("Security-Verify", securityVerify))
 	}
 	req.AppendHeader(sip.NewHeader("Content-Length", "0"))
 

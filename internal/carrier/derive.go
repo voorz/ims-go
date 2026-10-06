@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// DeriveParam 是可推导的参数。
-type DeriveParam string
-
 const (
 	ParamRegisterTemplate  DeriveParam = "register_template"
 	ParamSecurityMechanism DeriveParam = "security_mechanism"
@@ -16,30 +13,6 @@ const (
 	ParamKeepaliveInterval DeriveParam = "keepalive_interval"
 	ParamSMSRetry          DeriveParam = "sms_retry"
 )
-
-// ParamVariant 是一组参数变体。
-type ParamVariant struct {
-	Name   string
-	Params map[DeriveParam]string
-}
-
-// ProbeResult 是试探结果。
-type ProbeResult struct {
-	Variant ParamVariant
-	Success bool
-	Detail  string
-	At      time.Time
-}
-
-// DeriveEngine 是推导引擎（P1：试探→收敛→持久化）。
-type DeriveEngine struct {
-	log      *slog.Logger
-	resolver *Resolver
-	// OnProbe 是试探回调（实际执行 REGISTER 等）。
-	OnProbe func(variant ParamVariant) ProbeResult
-	// OnDecision 决策记录（P2 复用）。
-	OnDecision func(decision string, detail string)
-}
 
 // NewDeriveEngine 创建推导引擎。
 func NewDeriveEngine(log *slog.Logger, resolver *Resolver) *DeriveEngine {

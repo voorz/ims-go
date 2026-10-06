@@ -2,19 +2,8 @@ package media
 
 import (
 	"encoding/binary"
-	"sync/atomic"
 	"time"
 )
-
-// DTMFSender 发送 RFC 4733 DTMF（连续序号、冗余）。
-type DTMFSender struct {
-	seq       atomic.Uint32 // RTP 序号（连续）
-	timestamp atomic.Uint32
-	ssrc      uint32
-	pt        uint8 // DTMF payload type
-
-	send func(pkt []byte) error
-}
 
 // NewDTMFSender 创建 DTMF 发送器。
 // send 是底层 RTP 发送函数（已组好头的包直接发送）。

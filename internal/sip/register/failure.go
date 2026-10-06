@@ -7,24 +7,6 @@ import (
 	"time"
 )
 
-// FailureDecision 是二维失败决策的结果。
-//
-// 维度一（换花样，vowifi-core）：403/配置码 → 换下一个变体
-// 维度二（延迟重试，vowifi-go）：Retry-After/423 → 等待后重试
-// 两个维度正交，可组合。
-type FailureDecision struct {
-	// TryNextVariant 换下一个变体
-	TryNextVariant bool
-	// RetryAfter 等待后重试同一变体（0 表示不等待）
-	RetryAfter time.Duration
-	// AdvanceRegistrar 换下一个 P-CSCF
-	AdvanceRegistrar bool
-	// GiveUp 放弃
-	GiveUp bool
-	// Reason 决策原因（用于日志和 P2 记录）
-	Reason string
-}
-
 // DecideFailure 对 REGISTER 失败做二维决策。
 func DecideFailure(statusCode int, resHeaders map[string]string, variantIdx, variantTotal int, hasMoreRegistrar bool) FailureDecision {
 	// 维度二优先：协议级重试（RFC 要求）

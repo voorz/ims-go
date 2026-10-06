@@ -3,18 +3,18 @@
 // 之前 dialog.Registry、keepalive.Keeper、inbound.Dispatcher、transport.Pipeline
 // 都是零集成的死代码。本包将它们与 register.Registrar、subscribe.Subscriber
 // 装配为一个可 Start/Stop 的整体，实现 ims.Module 接口。
+// 类型定义见 types.go（门禁③）。
 package stack
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
+	"time"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
-	"github.com/voorz/ims-go/internal/sim"
 	"github.com/voorz/ims-go/internal/sip/dialog"
 	"github.com/voorz/ims-go/internal/sip/inbound"
 	"github.com/voorz/ims-go/internal/sip/keepalive"
@@ -22,56 +22,6 @@ import (
 	"github.com/voorz/ims-go/internal/sip/subscribe"
 	"github.com/voorz/ims-go/internal/sip/transport"
 )
-
-// Config 是 SIP 协议栈配置。
-type Config struct {
-	// IMPU/IMPI/HomeDomain：IMS 标识。
-	IMPU       string
-	IMPI       string
-	HomeDomain string
-	// PCSCFAddrs：P-CSCF 候选。
-	PCSCFAddrs []string
-	// Contact：本地 Contact。
-	Contact string
-	// RegisterExpires：注册有效期（秒）；0 用默认。
-	RegisterExpires int
-	// SubscribeExpires：订阅有效期（秒）；0 用默认 3600。
-	SubscribeExpires int
-	// AKAProvider：Digest-AKA。
-	AKAProvider sim.AKAProvider
-	// EAPRES：SWu 阶段 EAP-AKA RES（可选）。
-	EAPRES string
-	// SecurityVerify：从 REGISTER 继承的 Security-Server（订阅用）。
-	SecurityVerify string
-	// VoiceHandler：入站 INVITE 的语音处理器（可为 nil）。
-	VoiceHandler inbound.VoiceRequestHandler
-	// OnRegisterState：注册状态变更回调。
-	OnRegisterState func(from, to register.State)
-	// OnSubscribeState：订阅状态变更回调。
-	OnSubscribeState func(from, to subscribe.State)
-	// Logger：为空用 slog 默认。
-	Logger *slog.Logger
-}
-
-// Stack 是装配后的 SIP 协议栈。
-type Stack struct {
-	cfg Config
-	log *slog.Logger
-
-	mu         sync.Mutex
-	ua         *sipgo.UserAgent
-	client     *sipgo.Client
-	server     *sipgo.Server
-	pipeline   *transport.Pipeline
-	dialogs    *dialog.Registry
-	registrar  *register.Registrar
-	subscriber *subscribe.Subscriber
-	keeper     *keepalive.Keeper
-	dispatcher *inbound.Dispatcher
-
-	running bool
-	cancel  context.CancelFunc
-}
 
 // New 创建 SIP 协议栈（未启动）。
 func New(cfg Config) (*Stack, error) {
@@ -151,8 +101,21 @@ func New(cfg Config) (*Stack, error) {
 			return transport.DoRequest(ctx, s.client, req)
 		},
 		OnFailed: func() {
-			s.log.Warn("keepalive 连续失败，触发恢复")
-			// TODO: 联动 WS-5 重新注册（P2）。
+			s.log.Warn("keepalive 连续失败，触发重注册")
+			// 联动 WS-5：保活失败说明传输可能已断，触发完整重注册。
+			// 异步执行，避免阻塞 keepalive 循环。
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if err := s.registrar.Register(ctx); err != nil {
+					s.log.Error("保活触发的重注册失败", "error", err)
+					if s.cfg.OnKeepaliveFailed != nil {
+						s.cfg.OnKeepaliveFailed()
+					}
+				} else {
+					s.log.Info("保活触发的重注册成功")
+				}
+			}()
 		},
 		Logger: cfg.Logger,
 	})
@@ -186,8 +149,14 @@ func (s *Stack) Start(ctx context.Context) error {
 	}
 	s.log.Info("IMS 注册成功")
 
+	// 2.5 Security-Verify 继承：从 REGISTER 200 OK 提取 Security-Server，
+	// 传给 SUBSCRIBE（之前是"简化处理"未实现）。
+	if reg := s.registrar.Registration(); reg != nil && reg.SecurityServer != "" {
+		s.subscriber.SetSecurityVerify(reg.SecurityServer)
+		s.log.Info("Security-Verify 已继承", "server", reg.SecurityServer)
+	}
+
 	// 3. SUBSCRIBE(reg)
-	// Security-Verify 从注册结果继承（此处简化，实际应从 200 OK 提取）。
 	if err := s.subscriber.Subscribe(ctx); err != nil {
 		s.log.Warn("SUBSCRIBE 失败（继续运行）", "error", err)
 		// 订阅失败不阻塞主流程（P-CSCF 保活靠 keepalive）。
@@ -220,7 +189,7 @@ func (s *Stack) Stop() error {
 		s.keeper.Stop()
 	}
 	if s.subscriber != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*1000000000)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = s.subscriber.Unsubscribe(ctx)
 		cancel()
 	}

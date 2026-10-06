@@ -94,11 +94,12 @@ type Decision struct {
 
 // Registration 是成功注册的信息。
 type Registration struct {
-	Expires   time.Time
-	GRUU      string // 公有 GRUU（pub-gruu）
-	TempGRUU  string // 临时 GRUU
-	Contact   string
-	ExpiresIn int // 秒
+	Expires        time.Time
+	GRUU           string // 公有 GRUU（pub-gruu）
+	TempGRUU       string // 临时 GRUU
+	Contact        string
+	ExpiresIn      int    // 秒
+	SecurityServer string // 200 OK 的 Security-Server（SUBSCRIBE 继承用）
 }
 
 // Registrar 管理 REGISTER 生命周期。
@@ -126,4 +127,44 @@ type Registrar struct {
 	lastCallID string
 	lastCSeq   int
 	lastAuth   string
+}
+
+// Variant 是初始 REGISTER 的一种"花样"。
+//
+// 生产洞察（vowifi-core）：IMS 注册失败 90% 是"请求格式不对"（换变体解决）
+// 或"P-CSCF 挂了"（换台解决），只有 10% 需要等待重试。
+// 变体矩阵按顺序试错，哪个成功用哪个。
+type Variant struct {
+	// Name 变体名，用于日志和决策记录。
+	Name string
+	// InitialAuth 初始 Authorization 模式：
+	//   ""                        - 不带 Authorization 头（标准）
+	//   "aka_empty"               - 空 Digest-AKA 占位
+	//   "aka_empty_uri_first"     - 空 Digest-AKA，URI 优先
+	//   "aka_zero_response_uri_first" - response=0 的 Digest-AKA，URI 优先
+	//   "none"                    - 明确不带认证头
+	//   "eap_direct"              - 复用 SWu 阶段 EAP-AKA 的 RES（防 SQN 双消耗）
+	InitialAuth string
+	// IncludePANI 是否带 P-Access-Network-Info 头。
+	IncludePANI bool
+	// IncludeCellular 是否带蜂窝网络信息。
+	IncludeCellular bool
+}
+
+// FailureDecision 是二维失败决策的结果。
+//
+// 维度一（换花样，vowifi-core）：403/配置码 → 换下一个变体
+// 维度二（延迟重试，vowifi-go）：Retry-After/423 → 等待后重试
+// 两个维度正交，可组合。
+type FailureDecision struct {
+	// TryNextVariant 换下一个变体
+	TryNextVariant bool
+	// RetryAfter 等待后重试同一变体（0 表示不等待）
+	RetryAfter time.Duration
+	// AdvanceRegistrar 换下一个 P-CSCF
+	AdvanceRegistrar bool
+	// GiveUp 放弃
+	GiveUp bool
+	// Reason 决策原因（用于日志和 P2 记录）
+	Reason string
 }
