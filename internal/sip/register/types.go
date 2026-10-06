@@ -61,6 +61,17 @@ type Config struct {
 	Expires int
 	// AKAProvider 用于 Digest-AKA（WS-2）。
 	AKAProvider sim.AKAProvider
+	// EAPRES 是 SWu 阶段 EAP-AKA 的 RES（16 进制字符串）。
+	// 非空时启用 EAP 直接认证变体（复用 RES，避免 USIM SQN 双消耗）。
+	EAPRES string
+	// EnableVariantFallback 启用变体矩阵试错（默认 true）。
+	// 关闭时只用 base 变体。
+	EnableVariantFallback bool
+	// HeaderOrder 指定 SIP 头顺序策略：
+	//   ""         - 默认顺序（按 buildRegister 的 Append 顺序）
+	//   "vodafone" - Vodafone UK 白名单顺序（头顺序敏感的 P-CSCF）
+	// vowifi-core 生产经验：Vodafone P-CSCF 对头顺序敏感。
+	HeaderOrder string
 	// Client 是 sipgo 客户端（传输由 WS-6 Pipeline 注入）。
 	Client *sipgo.Client
 	// OnStateChange 状态变更回调。
