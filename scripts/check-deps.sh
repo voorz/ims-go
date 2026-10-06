@@ -28,13 +28,17 @@ else
   echo "WorkingTree: Clean"
 fi
 
-# 3. 本地=远程
-LOCAL=$(git rev-parse HEAD)
-REMOTE=$(git rev-parse origin/main 2>/dev/null || echo "none")
-if [ "$LOCAL" = "$REMOTE" ]; then
-  echo "Pushed: Yes"
+# 3. 本地=远程（remote 不存在时跳过——按工作流 push 后会删 remote）
+if git rev-parse --verify origin/main >/dev/null 2>&1; then
+  LOCAL=$(git rev-parse HEAD)
+  REMOTE=$(git rev-parse origin/main)
+  if [ "$LOCAL" = "$REMOTE" ]; then
+    echo "Pushed: Yes"
+  else
+    ALL_OK=false; echo "  ❌ 本地 != 远程（未 push）"
+  fi
 else
-  ALL_OK=false; echo "  ❌ 本地 != 远程（未 push）"
+  echo "Pushed: 跳过（无 origin remote，按工作流 push 后已删除）"
 fi
 
 # 4. 关键依赖版本检查
