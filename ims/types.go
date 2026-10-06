@@ -126,7 +126,24 @@ type SWuConfig struct {
 }
 
 // SIPConfig：SIP 协议栈配置。WS-5/WS-6/WS-7 细化（注册参数、传输参数等）。
-type SIPConfig struct{}
+type SIPConfig struct {
+	// IMPU 是公有用户标识，如 "sip:alice@example.com"。
+	IMPU string
+	// IMPI 是私有用户标识，如 "alice@example.com"。
+	IMPI string
+	// HomeDomain 是归属域。
+	HomeDomain string
+	// PCSCFAddrs 是 P-CSCF 候选地址（host:port）。
+	PCSCFAddrs []string
+	// Contact 是本地 Contact URI。
+	Contact string
+	// RegisterExpires 是注册有效期（秒）；0 用默认 600。
+	RegisterExpires int
+	// SubscribeExpires 是订阅有效期（秒）；0 用默认 3600。
+	SubscribeExpires int
+	// EAPRES 是 SWu 阶段 EAP-AKA 的 RES（可选，启用 EAP 直接认证）。
+	EAPRES string
+}
 
 // VoiceConfig：语音配置。WS-11/WS-12 细化（编解码偏好、DTMF 模式等）。
 type VoiceConfig struct{}

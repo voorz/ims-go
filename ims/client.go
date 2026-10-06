@@ -22,6 +22,13 @@ func New(cfg Config) (*Client, error) {
 		}
 		cfg.Modules.Tunnel = tunnel
 	}
+	if cfg.Modules.SIP == nil && sipConfigured(cfg.SIP) {
+		sipMod, err := newDefaultSIP(cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Modules.SIP = sipMod
+	}
 	c := &Client{
 		cfg:      cfg,
 		disp:     newDispatcher(),
