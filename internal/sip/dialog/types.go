@@ -25,10 +25,12 @@ func (id ID) String() string {
 
 // Dialog 是一条 SIP 对话。
 type Dialog struct {
-	ID        ID
-	RemoteURI sip.Uri
-	LocalURI  sip.Uri
-	cseq      atomic.Uint32
+	ID           ID
+	RemoteURI    sip.Uri
+	LocalURI     sip.Uri
+	RemoteTarget sip.Uri  // 从 200 OK Contact 学习的目标地址
+	RouteSet     []string // Record-Route（可选）
+	cseq         atomic.Uint32
 }
 
 // CSeq 分配下一个 CSeq（原子）。

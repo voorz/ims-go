@@ -83,6 +83,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 	for _, addr := range addrs {
 		tried = append(tried, addr)
 		// 同一 P-CSCF 可重试（Retry-After/423），上限 3 次
+	retryLoop:
 		for retry := 0; retry < maxSameAddrRetries; retry++ {
 			res, err := r.attempt(ctx, addr)
 			if err != nil {
@@ -136,7 +137,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 				r.penalize(addr)
 				lastErr = fmt.Errorf("P-CSCF %s: %s", addr, decision.Reason)
 				r.log.Info("切换 P-CSCF", "addr", addr, "reason", decision.Reason)
-				break // 跳出重试循环，换下一个 addr
+				break retryLoop // 跳出重试循环，换下一个 addr
 			case decision.RetryAfter > 0:
 				r.log.Info("等待后重试当前 P-CSCF", "addr", addr, "after", decision.RetryAfter, "reason", decision.Reason)
 				select {

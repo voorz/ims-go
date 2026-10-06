@@ -7,6 +7,7 @@ package dialog
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/emiago/sipgo/sip"
 )
@@ -83,4 +84,46 @@ func (d *Dialog) NewPRACK(rseq int) *sip.Request {
 	rack := fmt.Sprintf("%d %d %s", rseq, d.cseq.Load(), sip.INVITE)
 	req.AppendHeader(sip.NewHeader("RAck", rack))
 	return req
+}
+
+// LearnFromResponse 从 INVITE 的 2xx 响应学习 dialog 信息（P0：不可绕过）。
+// 提取：To tag（RemoteTag）、Contact（RemoteTarget）、Record-Route（RouteSet）。
+// 返回错误时 dialog 不完整，调用方不应继续。
+func (d *Dialog) LearnFromResponse(res *sip.Response) error {
+	// To tag
+	if h := res.GetHeader("To"); h != nil {
+		if to, ok := h.(*sip.ToHeader); ok {
+			for _, p := range to.Params {
+				if p.K == "tag" {
+					d.ID.RemoteTag = p.V
+					break
+				}
+			}
+		}
+	}
+	if d.ID.RemoteTag == "" {
+		return fmt.Errorf("dialog: 2xx 缺少 To tag")
+	}
+	// Contact → RemoteTarget
+	if h := res.GetHeader("Contact"); h != nil {
+		if c, ok := h.(*sip.ContactHeader); ok {
+			d.RemoteTarget = c.Address
+		} else {
+			// 尝试解析原始值
+			val := strings.TrimSpace(h.Value())
+			val = strings.Trim(val, "<>")
+			var u sip.Uri
+			if err := sip.ParseUri(val, &u); err == nil {
+				d.RemoteTarget = u
+			}
+		}
+	}
+	if d.RemoteTarget.Host == "" {
+		return fmt.Errorf("dialog: 2xx 缺少 Contact")
+	}
+	// Record-Route → RouteSet（可选）
+	for _, h := range res.GetHeaders("Record-Route") {
+		d.RouteSet = append(d.RouteSet, h.Value())
+	}
+	return nil
 }

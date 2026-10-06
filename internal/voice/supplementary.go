@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/emiago/sipgo/sip"
 
@@ -41,10 +40,10 @@ func (a *Agent) setHold(ctx context.Context, callID string, hold bool) error {
 			return
 		}
 		if call.LocalHold == hold {
-			return // 已是目标状态
+			return // 已是目标状态（幂等）
 		}
 
-		// 构造 re-INVITE（dialog 内，CSeq 递增）
+		// 1. 构造 re-INVITE（SDP 方向改写 + o= 版本递增 + QoS 重声明）
 		req, buildErr := a.buildReInvite(call, hold)
 		if buildErr != nil {
 			err = buildErr
@@ -55,11 +54,37 @@ func (a *Agent) setHold(ctx context.Context, callID string, hold bool) error {
 			err = fmt.Errorf("voice: re-INVITE 失败: %w", doErr)
 			return
 		}
-		if res.StatusCode != 200 {
+		// 2. 非 2xx → 发 ACK（4xx-6xx）
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			ack := call.Dialog.NewInDialogRequest(sip.ACK)
+			_, _ = transport.DoRequest(ctx, a.cfg.Client, ack)
 			err = fmt.Errorf("voice: re-INVITE 被拒绝，状态码 %d", res.StatusCode)
 			return
 		}
+		// 3. 2xx → ACK
+		ack := call.Dialog.NewInDialogRequest(sip.ACK)
+		_, _ = transport.DoRequest(ctx, a.cfg.Client, ack)
+
+		// 4. 更新状态
 		call.LocalHold = hold
+
+		// 5. 媒体方向联动：hold 时停发 RTP（省电+避免对端收静音包）
+		// TODO: 需要 relay 句柄，P1 后续接线
+		// if call.Relay != nil {
+		//     call.Relay.SetSendEnabled(!hold)
+		// }
+
+		// 6. Session Timer 重启（re-INVITE 可能重协商 timer）
+		if expires, refresher := parseSessionExpires(res); expires > 0 {
+			call.SessionExpires = expires
+			call.SessionRefresher = refresher
+		}
+		if call.sessionTimer != nil {
+			call.sessionTimer.Stop()
+		}
+		call.sessionTimer = newSessionTimer(a, call, call.SessionExpires, call.SessionRefresher, call.Direction)
+		call.sessionTimer.Start()
+
 		a.log.Info("呼叫 hold 状态变更", "callID", callID, "hold", hold)
 	})
 	<-done
@@ -67,186 +92,57 @@ func (a *Agent) setHold(ctx context.Context, callID string, hold bool) error {
 }
 
 // buildReInvite 构造 dialog 内 re-INVITE（hold/resume）。
+// Dialog 信息由 dialog 包单点拥有，禁止手工拼装（D-007）。
+// SDP：方向改写 + o= 版本递增（RFC 3264）+ QoS 重声明（已建立会话）
 func (a *Agent) buildReInvite(call *Call, hold bool) (*sip.Request, error) {
-	recipient := sip.Uri{}
-	if err := sip.ParseUri(call.RemoteTarget, &recipient); err != nil {
-		return nil, fmt.Errorf("voice: 解析 RemoteTarget: %w", err)
+	if call.Dialog == nil {
+		return nil, fmt.Errorf("voice: 无 dialog，无法发 re-INVITE")
 	}
-	req := sip.NewRequest(sip.INVITE, recipient)
+	req := call.Dialog.NewInDialogRequest(sip.INVITE)
 	req.SetDestination(a.cfg.PCSCFAddr)
 
-	req.AppendHeader(sip.NewHeader("Call-ID", call.CallID))
-	call.CSeq++
-	req.AppendHeader(sip.NewHeader("CSeq", fmt.Sprintf("%d INVITE", call.CSeq)))
-
-	from := &sip.FromHeader{
-		Address: sip.Uri{User: a.cfg.IMPU},
-		Params:  sip.HeaderParams{{K: "tag", V: call.LocalTag}},
-	}
-	req.AppendHeader(from)
-	to := &sip.ToHeader{
-		Address: recipient,
-		Params:  sip.HeaderParams{{K: "tag", V: call.RemoteTag}},
-	}
-	req.AppendHeader(to)
-
 	// SDP：hold 时 sendonly，否则 sendrecv
+	// o= 版本递增（RFC 3264 要求每次 offer 递增）
+	// QoS：已建立会话，curr:qos remote 改为 sendrecv（不再走 precondition）
 	direction := "sendrecv"
 	if hold {
 		direction = "sendonly"
 	}
-	sdp := a.buildHoldSDP(direction)
+	sdp := a.buildHoldSDP(direction, call.SDP)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.SetBody([]byte(sdp))
 
 	return req, nil
 }
 
-// buildHoldSDP 构造 hold/resume 的 SDP。
-func (a *Agent) buildHoldSDP(direction string) string {
-	return fmt.Sprintf("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=%s\r\n", direction)
+// buildHoldSDP 构造 hold/resume 的 SDP（o= 递增 + QoS 重声明）。
+func (a *Agent) buildHoldSDP(direction, prevSDP string) string {
+	// 解析旧 o= 行的版本并递增
+	version := 0
+	for _, line := range strings.Split(prevSDP, "\r\n") {
+		if strings.HasPrefix(line, "o=") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				fmt.Sscanf(parts[2], "%d", &version)
+			}
+		}
+	}
+	version++
+	var sb strings.Builder
+	sb.WriteString("v=0\r\n")
+	sb.WriteString(fmt.Sprintf("o=- %d %d IN IP4 127.0.0.1\r\n", version, version))
+	sb.WriteString("s=-\r\n")
+	sb.WriteString("c=IN IP4 127.0.0.1\r\n")
+	sb.WriteString("t=0 0\r\n")
+	sb.WriteString("m=audio 5004 RTP/AVP 0\r\n")
+	sb.WriteString(fmt.Sprintf("a=%s\r\n", direction))
+	// QoS 重声明：已建立会话，remote 已 sendrecv
+	sb.WriteString("a=curr:qos local sendrecv\r\n")
+	sb.WriteString("a=curr:qos remote sendrecv\r\n")
+	sb.WriteString("a=des:qos mandatory local sendrecv\r\n")
+	sb.WriteString("a=des:qos optional remote sendrecv\r\n")
+	return sb.String()
 }
 
 // Refer 呼转（RFC 3515）：REFER + Replaces。
 // target 是转移目标（如 sip:bob@example.com）。
-func (a *Agent) Refer(ctx context.Context, callID, target string) error {
-	a.mu.RLock()
-	ca, ok := a.calls[callID]
-	a.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("voice: 呼叫 %s 不存在", callID)
-	}
-
-	var err error
-	done := make(chan struct{})
-	ca.do(func() {
-		defer close(done)
-		call := ca.call
-		if call.State != StateConnected {
-			err = fmt.Errorf("voice: 呼叫状态 %s，无法转移", call.State)
-			return
-		}
-
-		recipient := sip.Uri{}
-		if parseErr := sip.ParseUri(call.RemoteTarget, &recipient); parseErr != nil {
-			err = parseErr
-			return
-		}
-		req := sip.NewRequest(sip.REFER, recipient)
-		req.SetDestination(a.cfg.PCSCFAddr)
-
-		req.AppendHeader(sip.NewHeader("Call-ID", call.CallID))
-		call.CSeq++
-		req.AppendHeader(sip.NewHeader("CSeq", fmt.Sprintf("%d REFER", call.CSeq)))
-
-		from := &sip.FromHeader{
-			Address: sip.Uri{User: a.cfg.IMPU},
-			Params:  sip.HeaderParams{{K: "tag", V: call.LocalTag}},
-		}
-		req.AppendHeader(from)
-		to := &sip.ToHeader{
-			Address: recipient,
-			Params:  sip.HeaderParams{{K: "tag", V: call.RemoteTag}},
-		}
-		req.AppendHeader(to)
-
-		// Refer-To
-		req.AppendHeader(sip.NewHeader("Refer-To", target))
-		// Referred-By（可选）
-		req.AppendHeader(sip.NewHeader("Referred-By", fmt.Sprintf("<sip:%s>", a.cfg.IMPU)))
-		req.AppendHeader(sip.NewHeader("Content-Length", "0"))
-
-		res, doErr := transport.DoRequest(ctx, a.cfg.Client, req)
-		if doErr != nil {
-			err = fmt.Errorf("voice: REFER 失败: %w", doErr)
-			return
-		}
-		// 202 Accepted 表示转移已接受（异步通过 NOTIFY 报告结果）
-		if res.StatusCode != 202 && res.StatusCode != 200 {
-			err = fmt.Errorf("voice: REFER 被拒绝，状态码 %d", res.StatusCode)
-			return
-		}
-		a.log.Info("呼叫转移已发起", "callID", callID, "target", target)
-	})
-	<-done
-	return err
-}
-
-// startSessionTimer 启动 Session Timer（RFC 4028）。
-// expires 秒；refresher 为 "uac"（我是刷新方）或 "uas"（对端是刷新方）。
-func (a *Agent) startSessionTimer(call *Call, expires int, refresher string) {
-	if expires <= 0 {
-		return
-	}
-	// vowifi-go 经验：无 Session-Expires 头时 fallback 1800（IR.92）。
-	if expires == 0 {
-		expires = 1800
-	}
-	call.SessionExpires = expires
-	call.SessionRefresher = refresher
-
-	if call.SessionTimer != nil {
-		call.SessionTimer.Stop()
-	}
-
-	if refresher == "uac" {
-		// 我是 refresher：expires/2 时发 UPDATE 刷新。
-		// 失败只 warn，不杀呼叫（vowifi-go 生产经验）。
-		interval := time.Duration(expires/2) * time.Second
-		call.SessionTimer = time.AfterFunc(interval, func() {
-			a.log.Info("Session Timer 刷新", "callID", call.ID)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			// 简化：用 re-INVITE 刷新（实际可用 UPDATE）
-			if err := a.setHold(ctx, call.ID, call.LocalHold); err != nil {
-				a.log.Warn("Session 刷新失败（呼叫继续）", "error", err)
-			} else {
-				// 刷新成功，重启 timer
-				a.mu.RLock()
-				ca, ok := a.calls[call.ID]
-				a.mu.RUnlock()
-				if ok {
-					ca.do(func() {
-						a.startSessionTimer(ca.call, expires, refresher)
-					})
-				}
-			}
-		})
-	} else {
-		// 对端是 refresher：超时未刷新则 Hangup（死呼叫检测最后防线）。
-		interval := time.Duration(expires) * time.Second
-		call.SessionTimer = time.AfterFunc(interval, func() {
-			a.log.Warn("Session Timer 超时，对端未刷新，挂断", "callID", call.ID)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = a.Hangup(ctx, call.ID)
-		})
-	}
-}
-
-// stopSessionTimer 停止 Session Timer。
-func (a *Agent) stopSessionTimer(call *Call) {
-	if call.SessionTimer != nil {
-		call.SessionTimer.Stop()
-		call.SessionTimer = nil
-	}
-}
-
-// parseSessionExpires 从响应解析 Session-Expires 头。
-func parseSessionExpires(res *sip.Response) (expires int, refresher string) {
-	h := res.GetHeader("Session-Expires")
-	if h == nil {
-		return 0, ""
-	}
-	val := h.Value()
-	// 格式：1800;refresher=uac
-	parts := strings.Split(val, ";")
-	fmt.Sscanf(strings.TrimSpace(parts[0]), "%d", &expires)
-	for _, p := range parts[1:] {
-		p = strings.TrimSpace(p)
-		if strings.HasPrefix(p, "refresher=") {
-			refresher = strings.TrimPrefix(p, "refresher=")
-		}
-	}
-	return expires, refresher
-}

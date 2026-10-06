@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/emiago/sipgo"
+
+	"github.com/voorz/ims-go/internal/sip/dialog"
 )
 
 // State 是呼叫状态（8 状态机）。
@@ -89,25 +91,27 @@ type Call struct {
 	RemoteURI string
 	At        time.Time
 
-	// Dialog 状态（INVITE 建立后填充）
-	CallID       string
-	LocalTag     string
-	RemoteTag    string
-	RemoteTarget string
-	CSeq         uint32
+	// Dialog 句柄（INVITE 2xx 后经 LearnFromResponse 建立，不可绕过）。
+	// 所有 dialog 内请求必须经 Dialog 发，禁止手工拼装（D-007）。
+	Dialog *dialog.Dialog
 
 	// 补充业务状态
 	LocalHold  bool // 本地 hold
 	RemoteHold bool // 远端 hold
 
-	// Session Timer（RFC 4028）
-	SessionExpires   int    // 秒；0 表示未协商
-	SessionRefresher string // "uac" / "uas"
-	SessionTimer     *time.Timer
+	// Session Timer（RFC 4028）：由 sessionTimer 状态机管理，见 session_timer.go
+	SessionExpires   int           // 秒；0 表示未协商
+	SessionRefresher string        // "uac" / "uas"
+	sessionTimer     *sessionTimer // 内部 timer（小写，外部经方法访问）
 
 	// 媒体
 	SDP       string // 本地 SDP
 	RemoteSDP string // 远端 SDP
+
+	// 幂等释放：防止 CANCEL/BYE/超时三路并发重复释放
+	finalizeOnce sync.Once
+	// No-answer timer
+	noAnswerTimer *time.Timer
 }
 
 // Config 是 Agent 配置。
@@ -145,8 +149,9 @@ type Agent struct {
 	cfg Config
 	log *slog.Logger
 
-	mu    sync.RWMutex
-	calls map[string]*callActor
+	mu            sync.RWMutex
+	calls         map[string]*callActor
+	referSessions map[string]*referSession // callID → REFER 会话
 }
 
 // callActor 是单呼叫的 Actor（单 goroutine 串行状态转移）。

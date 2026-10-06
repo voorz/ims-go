@@ -92,11 +92,11 @@ func TestAgentDial(t *testing.T) {
 						}
 					}
 					base := "Via: " + via + "\r\nCSeq: " + cseq + "\r\nCall-ID: " + callID + "\r\n"
-					// 180 Ringing
-					_, _ = c.Write([]byte("SIP/2.0 180 Ringing\r\n" + base + "Content-Length: 0\r\n\r\n"))
+					// 180 Ringing（带 To tag，early dialog）
+					_, _ = c.Write([]byte("SIP/2.0 180 Ringing\r\n" + base + "To: <sip:bob@example.com>;tag=remote123\r\nContent-Length: 0\r\n\r\n"))
 					time.Sleep(50 * time.Millisecond)
-					// 200 OK
-					_, _ = c.Write([]byte("SIP/2.0 200 OK\r\n" + base + "Content-Type: application/sdp\r\nContent-Length: 0\r\n\r\n"))
+					// 200 OK（To tag + Contact，dialog 学习必需）
+					_, _ = c.Write([]byte("SIP/2.0 200 OK\r\n" + base + "To: <sip:bob@example.com>;tag=remote123\r\nContact: <sip:bob@192.168.1.1>\r\nContent-Type: application/sdp\r\nContent-Length: 0\r\n\r\n"))
 				}
 			}(conn)
 		}
