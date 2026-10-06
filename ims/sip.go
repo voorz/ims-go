@@ -29,6 +29,7 @@ func newDefaultSIP(cfg Config) (Module, error) {
 		Contact:          cfg.SIP.Contact,
 		RegisterExpires:  cfg.SIP.RegisterExpires,
 		SubscribeExpires: cfg.SIP.SubscribeExpires,
+		CellID:           cfg.SIP.CellID,
 		EAPRES:           cfg.SIP.EAPRES,
 		VoiceHandler:     toInboundHandler(cfg.Voice.OnIncomingCall),
 		Dialer:           toTransportDialer(cfg.SIP.Dialer),

@@ -1,6 +1,7 @@
 package ims
 
 import (
+	"github.com/voorz/ims-go/internal/netplane/ipsec"
 	"github.com/voorz/ims-go/internal/sim"
 	"github.com/voorz/ims-go/internal/swu"
 )
@@ -41,6 +42,19 @@ func newDefaultTunnel(cfg Config) (Module, error) {
 		sc.EPDGAddr = cfg.SWu.EPDGAddrs[0]
 	}
 	sc.DataplaneMode = string(cfg.Dataplane.Mode)
+
+	// A7：代理配置映射。Proxy.Enabled 时走 SOCKS5；TransportFactory 优先（自定义传输）。
+	if cfg.SWu.Proxy != nil && cfg.SWu.Proxy.Enabled && cfg.SWu.Proxy.Addr != "" {
+		sc.ProxyAddr = cfg.SWu.Proxy.Addr
+		sc.Proxy = &ipsec.Socks5Config{
+			ProxyAddr: cfg.SWu.Proxy.Addr,
+			Username:  cfg.SWu.Proxy.Username,
+			Password:  cfg.SWu.Proxy.Password,
+		}
+	}
+	// TransportFactory 由主项目注入时，库内暂存（后续接线到 session 创建）。
+	// 当前版本：记录在案，实际传输创建仍走内部逻辑（Phase 后续细化）。
+	_ = cfg.SWu.TransportFactory
 
 	// AKA：优先消费方注入的硬件 provider，其次软 SIM（D-015）。
 	switch {

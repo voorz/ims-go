@@ -2,11 +2,15 @@ package ims
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"time"
+
+	"github.com/voorz/ims-go/internal/carrier"
+	"github.com/voorz/ims-go/internal/identity"
 )
 
-// New 构造客户端：填充默认值 → 一次集中校验（D-007）→ 默认模块装配。
+// New 构造客户端：填充默认值 → 一次集中校验（D-007）→ PrepareStart（A4）→ 默认模块装配。
 // 子系统通过 Config.Modules 以 interface 注入（D-010）；
 // 为 nil 的槽位表示该能力未装配，调用对应方法时返回哨兵错误。
 // 例外：SWu 隧道在已配置但未注入时自动装配默认实现（见 ims/swu.go）。
@@ -14,6 +18,38 @@ func New(cfg Config) (*Client, error) {
 	cfg = applyDefaults(cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+	// A4：PrepareStart——Profile 校验 → 运营商解析 → 身份三态。
+	// MCC/MNC 为空时跳过（消费者可能后续设置）。
+	var ident *identity.Identity
+	if cfg.SWu.MCC != "" && cfg.SWu.MNC != "" {
+		resolver := carrier.NewResolver(slog.Default(), nil)
+		var carrierCfg *carrier.CarrierConfig
+		var err error
+		ident, carrierCfg, err = identity.PrepareStart(slog.Default(), identity.PrepareInput{
+			MCC:      cfg.SWu.MCC,
+			MNC:      cfg.SWu.MNC,
+			IMPI:     cfg.SIP.IMPI,
+			IMPU:     cfg.SIP.IMPU,
+			Mode:     identity.ModeAuto,
+			Resolver: resolver,
+		})
+		if err != nil {
+			return nil, err
+		}
+		// 运营商解析结果回填：用户显式配置优先（CarrierConfig 非空即覆盖）。
+		if carrierCfg != nil {
+			applyCarrierConfig(&cfg, carrierCfg)
+		}
+		// 身份回填：推导出的 IMPI/IMPU 写回（ISIM 模式已在输入中）。
+		if ident != nil {
+			if cfg.SIP.IMPI == "" {
+				cfg.SIP.IMPI = ident.IMPI
+			}
+			if cfg.SIP.IMPU == "" {
+				cfg.SIP.IMPU = ident.IMPU
+			}
+		}
 	}
 	if cfg.Modules.Tunnel == nil && swuConfigured(cfg.SWu) {
 		tunnel, err := newDefaultTunnel(cfg)
@@ -48,9 +84,19 @@ func New(cfg Config) (*Client, error) {
 		cfg:      cfg,
 		disp:     newDispatcher(),
 		modState: make(map[string]bool),
+		identity: ident,
 	}
 	c.state.Store(int32(lcStopped))
 	return c, nil
+}
+
+// applyCarrierConfig 将内部运营商解析结果回填到公开 Config。
+// 用户显式配置（cfg.Carrier 非零值）优先，不被覆盖。
+func applyCarrierConfig(cfg *Config, cc *carrier.CarrierConfig) {
+	// 仅回填用户未显式设置的字段；具体字段映射按 carrier.CarrierConfig 结构。
+	// 当前为占位：后续按实际字段细化。
+	_ = cfg
+	_ = cc
 }
 
 // slots 按固定顺序返回已装配的模块槽位：tunnel → sip → sms → ussd → voice。

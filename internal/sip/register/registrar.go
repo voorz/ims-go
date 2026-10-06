@@ -426,8 +426,12 @@ func (r *Registrar) buildRegister(expires int, pcscfAddr string, v Variant) *sip
 
 	// P-Access-Network-Info（按变体）
 	if v.IncludePANI {
-		// TODO: 从网络状态获取实际 PANI；当前用占位
-		req.AppendHeader(sip.NewHeader("P-Access-Network-Info", "IEEE-802.11"))
+		pani := "IEEE-802.11"
+		if r.cfg.CellID != "" {
+			// A5：有 CellID 时追加 3GPP 蜂窝信息
+			pani += "; 3GPP-UTRAN; utran-cell-id-3gpp=" + r.cfg.CellID
+		}
+		req.AppendHeader(sip.NewHeader("P-Access-Network-Info", pani))
 	}
 
 	req.AppendHeader(sip.NewHeader("Content-Length", "0"))

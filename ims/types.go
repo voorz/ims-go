@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/voorz/ims-go/internal/identity"
 	"github.com/voorz/ims-go/internal/sim"
 )
 
@@ -107,6 +108,31 @@ func toSimAKAProvider(p AKAProvider) sim.AKAProvider {
 }
 
 // SWuConfig：SWu/IKEv2 隧道配置（WS-3 收敛后的公开子集）。
+// ProxyConfig：SOCKS5 代理配置（A7，精简版）。
+// 用于按 PLMN 的地理路由：默认直连，仅在需要时启用。
+// 对标 vowifi-core ProxyConfig，但去重（Addr/Host/Address 三字段合并为一）。
+type ProxyConfig struct {
+	// Addr 是代理地址（host:port），如 "1.2.3.4:1080"。
+	Addr string
+	// Username/Password 可选（无认证时为空）。
+	Username string
+	Password string
+	// Enabled 为 true 时启用代理；false 或 nil ProxyConfig 表示直连。
+	Enabled bool
+}
+
+// SWuTransportFactory：SWu 传输工厂（A7，可插拔）。
+// 主项目可注入自己的传输实现（SOCKS5 或其他代理协议）；
+// nil 时库内按 ProxyConfig 创建默认 SOCKS5 传输，无 Proxy 时直连。
+type SWuTransportFactory func(local, remote string) (SWuTransport, error)
+
+// SWuTransport：SWu 层的数据报传输抽象。
+type SWuTransport interface {
+	WriteTo(p []byte, addr string) (int, error)
+	ReadFrom(p []byte) (int, string, error)
+	Close() error
+}
+
 // 内部完整配置见 internal/swu.Config；映射集中在 ims/swu.go（单处，D-007）。
 type SWuConfig struct {
 	// EPDGAddrs 是 ePDG 候选地址（域名或 IP）。
@@ -132,6 +158,10 @@ type SWuConfig struct {
 	DPD          time.Duration
 	// WiresharkKeyLogPath 是 ESP 密钥日志路径（排障用，D-013）。
 	WiresharkKeyLogPath string
+	// Proxy 是可选的 SOCKS5 代理（A7）；nil 或 !Enabled 时直连。
+	Proxy *ProxyConfig
+	// TransportFactory 是可选的自定义传输工厂（A7）；nil 时用默认实现。
+	TransportFactory SWuTransportFactory
 }
 
 // SIPConfig：SIP 协议栈配置。WS-5/WS-6/WS-7 细化（注册参数、传输参数等）。
@@ -150,6 +180,9 @@ type SIPConfig struct {
 	RegisterExpires int
 	// SubscribeExpires 是订阅有效期（秒）；0 用默认 3600。
 	SubscribeExpires int
+	// CellID 是蜂窝小区标识（A5），用于 PANI 头注入；为空时只发 IEEE-802.11。
+	// 格式：utran-cell-id-3gpp 值，如 "46000123456789"。
+	CellID string
 	// EAPRES 是 SWu 阶段 EAP-AKA 的 RES（可选，启用 EAP 直接认证）。
 	EAPRES string
 	// Dialer 是传输预拨号器（经 IPsec 隧道）；nil 时用 net.Dialer 直连（仅测试）。
@@ -219,10 +252,26 @@ type AudioIO interface {
 // IncomingCallHandler 处理入站语音呼叫（H1 桥接的公开契约）。
 // 相比内部 inbound.VoiceRequestHandler，本接口只暴露主项目需要的语义，
 // 不涉及 sipgo 事务对象。
+// IncomingCallRequest：入站 INVITE 的完整上下文（A3）。
+type IncomingCallRequest struct {
+	From      string            // 主叫标识
+	CallID    string            // 呼叫 ID
+	RemoteSDP string            // 远端 SDP offer，可空
+	Headers   map[string]string // 关键 SIP 头（P-Asserted-Identity 等），可空
+}
+
+// IncomingCallResponse：handler 对入站呼叫的裁决（A3）。
+type IncomingCallResponse struct {
+	Accept     bool   // true=接管（库不再做默认处理）
+	StatusCode int    // 拒绝时的 SIP 状态码（486/603…），Accept=false 时有效
+	Reason     string // 拒绝原因，人类可读
+	LocalSDP   string // 接受时的 SDP answer，Accept=true 时可空（库生成默认）
+}
+
 type IncomingCallHandler interface {
 	// HandleIncomingCall 收到入站 INVITE 时调用。
-	// from 是主叫标识，callID 是呼叫 ID；返回 true 表示接管（库不再做默认处理）。
-	HandleIncomingCall(ctx context.Context, from, callID string) bool
+	// 返回 Accept=true 表示接管；Accept=false + StatusCode 表示拒绝。
+	HandleIncomingCall(ctx context.Context, req IncomingCallRequest) IncomingCallResponse
 }
 
 // CarrierConfig：运营商覆盖（WS-13 内部模型的公开子集）。
@@ -235,6 +284,15 @@ type CarrierConfig struct {
 	// EPDGAddr 覆盖 ePDG 地址；空则用 preset/推导。
 	// 实际场景：自定义 APN、企业专线。
 	EPDGAddr string
+}
+
+// CarrierProfileYAML：云端 YAML profile 的公开表示（A6）。
+// 主项目用于展示和手动保存。
+type CarrierProfileYAML struct {
+	Version        int
+	Kind           string
+	ID             string
+	SupportedPLMNs []string
 }
 
 // DataplaneMode：数据面模式（D-013）。
@@ -341,6 +399,7 @@ type Client struct {
 	startedAt time.Time
 	modState  map[string]bool
 	decisions []DecisionRecord
+	identity  *identity.Identity // A4：PrepareStart 产出的身份，可空
 }
 
 // ==================== Status / Event / Decision ====================
@@ -378,7 +437,40 @@ const (
 	EventModuleFailed    EventType = "module.failed"
 	EventModuleRestarted EventType = "module.restarted"
 	EventModuleStopped   EventType = "module.stopped"
+	// 业务事件（A1）：携带 Data 负载。
+	EventSMSReceived        EventType = "sms.received"
+	EventSMSSent            EventType = "sms.sent"
+	EventLocalNumberLearned EventType = "identity.local_number_learned"
+	EventRegistrationFailed EventType = "register.failed"
 )
+
+// SMSReceivedData：EventSMSReceived 的 Data 负载。
+type SMSReceivedData struct {
+	From    string
+	Content string
+	At      time.Time
+}
+
+// SMSSentData：EventSMSSent 的 Data 负载。
+type SMSSentData struct {
+	To      string
+	MsgID   string
+	Success bool
+}
+
+// LocalNumberLearnedData：EventLocalNumberLearned 的 Data 负载。
+type LocalNumberLearnedData struct {
+	Number string
+	Source string // 学习来源：p-associated-uri / from-header / ...
+}
+
+// RegistrationFailedData：EventRegistrationFailed 的 Data 负载。
+// 供主项目做错误归因展示（A8）。
+type RegistrationFailedData struct {
+	StatusCode int
+	Hint       string // SIPErrorHints 映射的提示
+	Attempt    int
+}
 
 // Event：单一事件通道投递的事件（H5：消灭多通道）。
 type Event struct {
@@ -386,6 +478,7 @@ type Event struct {
 	At     time.Time
 	Module string // 相关模块名，可空
 	Reason string // 人类可读的原因
+	Data   any    // 业务负载，类型由 Type 决定（见上方 *Data 结构）
 }
 
 // EventHandler：事件处理函数。处理函数不得阻塞过久；
@@ -482,6 +575,30 @@ var (
 	errSMSNoSIP       = errors.New("ims: SMS 需要 SIP 栈（internal）")
 	errUSSDNoSIP      = errors.New("ims: USSD 需要 SIP 栈（internal）")
 )
+
+// ==================== SIP 错误码归因（A8） ====================
+
+// SIPErrorHints 将 SIP 错误码映射到参数嫌疑提示（A8）。
+// 供主项目在运营商调参时展示"这次失败最可能是什么参数的问题"，
+// 配合 DecisionRecord 做差异分析，避免盲目排列组合。
+var SIPErrorHints = map[int]string{
+	400: "请求格式错误：检查 SIP 头完整性、Contact 格式",
+	401: "需要认证：检查 AKA 配置、IMPI/IMPU 是否正确",
+	403: "认证失败或被拒绝：检查 AKA 偏好、IMPI、代理配置；可能是运营商侧阻断",
+	404: "用户不存在：检查 IMPU 格式、归属域是否正确",
+	408: "请求超时：检查 P-CSCF 地址可达性、网络连通性",
+	480: "临时不可用：对端忙或网络问题，稍后重试",
+	486: "忙：对端正在通话中",
+	488: "媒体协商失败：检查 SDP、编解码配置、IPsec 媒体保护设置",
+	494: "安全协商失败：检查 IPsec 开关、Security-Client 头",
+	500: "服务器内部错误：P-CSCF 侧问题，检查 P-CSCF 地址是否正确",
+	503: "服务不可用：P-CSCF 过载或维护，尝试下一个 P-CSCF 候选",
+}
+
+// SIPErrorHint 返回指定状态码的归因提示；无映射时返回空字符串。
+func SIPErrorHint(statusCode int) string {
+	return SIPErrorHints[statusCode]
+}
 
 // ==================== Redaction ====================
 

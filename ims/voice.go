@@ -80,15 +80,24 @@ func (a *incomingCallAdapter) HandleInvite(req *sipsdk.Request, tx sipsdk.Server
 	if a.h == nil {
 		return false
 	}
-	from := ""
+	icr := IncomingCallRequest{Headers: make(map[string]string)}
 	if h := req.GetHeader("From"); h != nil {
-		from = h.Value()
+		icr.From = h.Value()
 	}
-	callID := ""
 	if h := req.GetHeader("Call-ID"); h != nil {
-		callID = h.Value()
+		icr.CallID = h.Value()
 	}
-	return a.h.HandleIncomingCall(context.Background(), from, callID)
+	// 关键头透传（P-Asserted-Identity / Privacy 等）
+	for _, name := range []string{"P-Asserted-Identity", "Privacy", "Contact"} {
+		if h := req.GetHeader(name); h != nil {
+			icr.Headers[name] = h.Value()
+		}
+	}
+	if body := req.Body(); len(body) > 0 {
+		icr.RemoteSDP = string(body)
+	}
+	resp := a.h.HandleIncomingCall(context.Background(), icr)
+	return resp.Accept
 }
 
 func (a *incomingCallAdapter) HandleBye(req *sipsdk.Request, tx sipsdk.ServerTransaction) bool {

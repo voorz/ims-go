@@ -76,6 +76,7 @@ func New(cfg Config) (*Stack, error) {
 		Expires:               cfg.RegisterExpires,
 		AKAProvider:           cfg.AKAProvider,
 		EAPRES:                cfg.EAPRES,
+		CellID:                cfg.CellID,
 		EnableVariantFallback: true,
 		Client:                s.client,
 		VariantStore:          cfg.VariantStore,

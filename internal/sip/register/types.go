@@ -64,6 +64,8 @@ type Config struct {
 	// EAPRES 是 SWu 阶段 EAP-AKA 的 RES（16 进制字符串）。
 	// 非空时启用 EAP 直接认证变体（复用 RES，避免 USIM SQN 双消耗）。
 	EAPRES string
+	// CellID 是蜂窝小区标识（A5），用于 PANI 头；为空时只发 IEEE-802.11。
+	CellID string
 	// EnableVariantFallback 启用变体矩阵试错（默认 true）。
 	// 关闭时只用 base 变体。
 	EnableVariantFallback bool

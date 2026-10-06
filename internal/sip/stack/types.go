@@ -42,6 +42,8 @@ type Config struct {
 	EAPRES string
 	// VoiceHandler：入站 INVITE 的语音处理器（可为 nil）。
 	VoiceHandler inbound.VoiceRequestHandler
+	// CellID：蜂窝小区标识（A5），用于 PANI 头；为空时只发 IEEE-802.11。
+	CellID string
 	// OnRegisterState：注册状态变更回调。
 	OnRegisterState func(from, to register.State)
 	// OnSubscribeState：订阅状态变更回调。
