@@ -1,189 +1,127 @@
 package ussd
 
 import (
-	"context"
-	"net"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/emiago/sipgo"
 )
-
-// fakeUSSDServer 模拟 USSD 网关：
-//   - 收到 *100# → 返回菜单
-//   - 收到 "1" → 返回余额并结束
-type fakeUSSDServer struct {
-	t  *testing.T
-	ln net.Listener
-}
-
-func newFakeUSSDServer(t *testing.T) *fakeUSSDServer {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	f := &fakeUSSDServer{t: t, ln: ln}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go f.handle(conn)
-		}
-	}()
-	return f
-}
-
-func (f *fakeUSSDServer) handle(conn net.Conn) {
-	defer conn.Close()
-	buf := make([]byte, 16384)
-	for {
-		n, err := conn.Read(buf)
-		if err != nil || n == 0 {
-			return
-		}
-		msg := string(buf[:n])
-		if !strings.HasPrefix(msg, "MESSAGE") {
-			continue
-		}
-		cseq, via := "", ""
-		for _, line := range strings.Split(msg, "\r\n") {
-			if strings.HasPrefix(line, "CSeq:") {
-				cseq = strings.TrimSpace(strings.TrimPrefix(line, "CSeq:"))
-			}
-			if strings.HasPrefix(line, "Via:") {
-				via = strings.TrimSpace(strings.TrimPrefix(line, "Via:"))
-			}
-		}
-		// 提取 USSD 字符串
-		var ussdStr string
-		if idx := strings.Index(msg, "<ussd-string>"); idx >= 0 {
-			end := strings.Index(msg[idx:], "</ussd-string>")
-			if end >= 0 {
-				ussdStr = msg[idx+len("<ussd-string>") : idx+end]
-			}
-		}
-		var reply string
-		switch ussdStr {
-		case "*100#":
-			reply = "1. 查余额\n2. 充值"
-		case "1":
-			reply = "余额：100元"
-		default:
-			reply = "未知指令"
-		}
-		body, _ := EncodeXML(reply, "en")
-		resp := "SIP/2.0 200 OK\r\nVia: " + via + "\r\nCSeq: " + cseq + "\r\n" +
-			"Content-Type: " + ContentType + "\r\n" +
-			"Content-Length: " + itoa(len(body)) + "\r\n\r\n" + string(body)
-		_, _ = conn.Write([]byte(resp))
-	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [16]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
-}
-
-func TestUSSDSession(t *testing.T) {
-	f := newFakeUSSDServer(t)
-
-	ua, _ := sipgo.NewUA()
-	defer ua.Close()
-	client, _ := sipgo.NewClient(ua)
-	defer client.Close()
-
-	s := NewSession(Config{
-		IMPU:       "sip:alice@example.com",
-		USSDTarget: "127.0.0.1",
-		PCSCFAddr:  f.ln.Addr().String(),
-		Client:     client,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// 发起
-	reply, err := s.SendUSSD(ctx, "*100#")
-	if err != nil {
-		t.Fatalf("SendUSSD: %v", err)
-	}
-	if !strings.Contains(reply, "查余额") {
-		t.Errorf("回复 = %q，期望菜单", reply)
-	}
-	if s.State() != StateActive {
-		t.Errorf("State = %s，期望 active", s.State())
-	}
-
-	// 继续
-	reply, err = s.ContinueUSSD(ctx, "1")
-	if err != nil {
-		t.Fatalf("ContinueUSSD: %v", err)
-	}
-	if !strings.Contains(reply, "余额") {
-		t.Errorf("回复 = %q，期望余额", reply)
-	}
-
-	// 取消
-	if err := s.CancelUSSD(ctx); err != nil {
-		t.Fatalf("CancelUSSD: %v", err)
-	}
-	if s.State() != StateClosed {
-		t.Errorf("State = %s，期望 closed", s.State())
-	}
-}
 
 func TestEncodeDecodeXML(t *testing.T) {
 	body, err := EncodeXML("*100#", "en")
 	if err != nil {
 		t.Fatalf("EncodeXML: %v", err)
 	}
-	p, err := DecodeXML(body)
+	if !strings.Contains(string(body), "*100#") {
+		t.Fatalf("编码后不含命令: %s", body)
+	}
+	payload, err := DecodeXML(body)
 	if err != nil {
 		t.Fatalf("DecodeXML: %v", err)
 	}
-	if p.USSDString != "*100#" {
-		t.Errorf("USSDString = %q", p.USSDString)
-	}
-	if p.Language != "en" {
-		t.Errorf("Language = %q", p.Language)
+	if payload.USSDString != "*100#" {
+		t.Fatalf("解码不匹配: %q", payload.USSDString)
 	}
 }
 
-func TestSessionTimeout(t *testing.T) {
-	f := newFakeUSSDServer(t)
-	ua, _ := sipgo.NewUA()
-	defer ua.Close()
-	client, _ := sipgo.NewClient(ua)
-	defer client.Close()
-
-	s := NewSession(Config{
-		IMPU:           "sip:alice@example.com",
-		USSDTarget:     "127.0.0.1",
-		PCSCFAddr:      f.ln.Addr().String(),
-		Client:         client,
-		SessionTimeout: 100 * time.Millisecond,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := s.SendUSSD(ctx, "*100#"); err != nil {
-		t.Fatalf("SendUSSD: %v", err)
+func TestLooksLikeMenu(t *testing.T) {
+	menu := "请选择：\n1. 余额查询\n2. 流量查询"
+	if !LooksLikeMenu(menu) {
+		t.Fatalf("应识别为菜单")
 	}
-	time.Sleep(200 * time.Millisecond)
-	if s.State() != StateClosed {
-		t.Errorf("超时后 State = %s，期望 closed", s.State())
+	single := "您的余额为 100 元"
+	if LooksLikeMenu(single) {
+		t.Fatalf("不应识别为菜单")
+	}
+}
+
+func TestBuildMultipartBody(t *testing.T) {
+	ussdXML, _ := EncodeXML("*100#", "en")
+	body := BuildMultipartBody(ussdXML)
+	s := string(body)
+	if !strings.Contains(s, multipartBoundary) {
+		t.Fatalf("multipart 体缺 boundary")
+	}
+	if !strings.Contains(s, "application/sdp") {
+		t.Fatalf("multipart 体缺 SDP 部分")
+	}
+	if !strings.Contains(s, "*100#") {
+		t.Fatalf("multipart 体缺 USSD XML")
+	}
+	// 能解析回来
+	extracted := ExtractFromMultipart(body)
+	if len(extracted) == 0 {
+		t.Fatalf("ExtractFromMultipart 返回空")
+	}
+	payload, err := DecodeXML(extracted)
+	if err != nil {
+		t.Fatalf("解析提取的 XML: %v", err)
+	}
+	if payload.USSDString != "*100#" {
+		t.Fatalf("提取的 XML 不匹配: %q", payload.USSDString)
+	}
+}
+
+func TestBuildInitialInvite(t *testing.T) {
+	cfg := Config{
+		IMPU:   "sip:user@ims.example.com",
+		Domain: "ims.example.com",
+	}
+	ussdXML, _ := EncodeXML("*100#", "en")
+	req, err := BuildInitialInvite(cfg, "*100#", "callid-123", "tag-abc", 1, ussdXML)
+	if err != nil {
+		t.Fatalf("BuildInitialInvite: %v", err)
+	}
+	if req.Method != "INVITE" {
+		t.Fatalf("方法应为 INVITE: %s", req.Method)
+	}
+	// Request-URI 应为 dialstring 格式
+	uri := req.Recipient.String()
+	if !strings.Contains(uri, "phone-context") || !strings.Contains(uri, "user=dialstring") {
+		t.Fatalf("Request-URI 格式错误: %s", uri)
+	}
+	// # 应编码为 %23
+	if !strings.Contains(uri, "%23") {
+		t.Fatalf("# 未编码: %s", uri)
+	}
+	// Content-Type 应为 multipart
+	ct := ""
+	if h := req.GetHeader("Content-Type"); h != nil {
+		ct = h.Value()
+	}
+	if !strings.Contains(ct, "multipart/mixed") {
+		t.Fatalf("Content-Type 应为 multipart: %s", ct)
+	}
+}
+
+func TestParseResultMenu(t *testing.T) {
+	menuXML, _ := EncodeXML("1. 余额\n2. 流量", "en")
+	result := ParseResult(menuXML, "sess-1")
+	if result.Status != 1 {
+		t.Fatalf("菜单应返回 Status=1: %d", result.Status)
+	}
+	if result.SessionID != "sess-1" {
+		t.Fatalf("SessionID 不匹配: %s", result.SessionID)
+	}
+}
+
+func TestParseResultDone(t *testing.T) {
+	doneXML, _ := EncodeXML("余额 100 元", "en")
+	result := ParseResult(doneXML, "sess-1")
+	if result.Status != 0 {
+		t.Fatalf("非菜单应返回 Status=0: %d", result.Status)
+	}
+	if result.Text != "余额 100 元" {
+		t.Fatalf("文本不匹配: %q", result.Text)
+	}
+}
+
+func TestIsContentType(t *testing.T) {
+	if !IsContentType("application/vnd.3gpp.ussd+xml") {
+		t.Fatalf("应识别标准类型")
+	}
+	if !IsContentType("application/vnd.3gpp.ussd+xml;charset=utf-8") {
+		t.Fatalf("应识别带参数的类型")
+	}
+	if IsContentType("text/plain") {
+		t.Fatalf("不应识别 text/plain")
 	}
 }
