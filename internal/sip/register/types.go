@@ -67,11 +67,13 @@ type Config struct {
 	// EnableVariantFallback 启用变体矩阵试错（默认 true）。
 	// 关闭时只用 base 变体。
 	EnableVariantFallback bool
-	// HeaderOrder 指定 SIP 头顺序策略：
-	//   ""         - 默认顺序（按 buildRegister 的 Append 顺序）
-	//   "vodafone" - Vodafone UK 白名单顺序（头顺序敏感的 P-CSCF）
-	// vowifi-core 生产经验：Vodafone P-CSCF 对头顺序敏感。
-	HeaderOrder string
+	// HeaderOrder 指定 SIP 头序列化顺序（可选）。
+	// 背景：RFC 3261 规定头顺序不应影响语义，但某些 P-CSCF 实现有 bug，
+	// 对特定头顺序敏感（vowifi-core 在 Vodafone UK 遇到过）。
+	// ims-go 不硬编码运营商分支（那是生产补丁写法）；而是提供通用机制：
+	// 调用方经运营商配置传入顺序表，库按表重排，未在表中的头保持原相对顺序追加。
+	// 为空表示不重排（默认）。
+	HeaderOrder []string
 	// Client 是 sipgo 客户端（传输由 WS-6 Pipeline 注入）。
 	Client *sipgo.Client
 	// OnStateChange 状态变更回调。

@@ -396,7 +396,55 @@ func (r *Registrar) buildRegister(expires int, pcscfAddr string, v Variant) *sip
 	}
 
 	req.AppendHeader(sip.NewHeader("Content-Length", "0"))
+
+	// 通用头重排（如配置了 HeaderOrder）
+	applyHeaderOrder(req, r.cfg.HeaderOrder)
 	return req
+}
+
+// applyHeaderOrder 按 order 重排请求头顺序。
+// order 中的头按指定顺序排在前面；未在 order 中的头保持原相对顺序追加。
+// 这是通用机制，不针对特定运营商硬编码。
+func applyHeaderOrder(req *sip.Request, order []string) {
+	if len(order) == 0 {
+		return
+	}
+	// 收集所有头（克隆，避免修改原切片）
+	type hdr struct {
+		name   string
+		header sip.Header
+	}
+	var all []hdr
+	for _, h := range req.Headers() {
+		all = append(all, hdr{name: h.Name(), header: h})
+	}
+	// 按 order 排序：在 order 中的按 order 索引，不在的放后面保持原序
+	orderIdx := make(map[string]int, len(order))
+	for i, name := range order {
+		orderIdx[name] = i
+	}
+	// 稳定排序（冒泡，保持简单可读）
+	for i := 0; i < len(all); i++ {
+		for j := i + 1; j < len(all); j++ {
+			oi, iIn := orderIdx[all[i].name]
+			oj, jIn := orderIdx[all[j].name]
+			if jIn && (!iIn || oj < oi) {
+				all[i], all[j] = all[j], all[i]
+			}
+		}
+	}
+	// 清除原有头（逐个删除）
+	seen := make(map[string]bool)
+	for _, h := range all {
+		if !seen[h.name] {
+			req.RemoveHeader(h.name)
+			seen[h.name] = true
+		}
+	}
+	// 按新顺序追加
+	for _, h := range all {
+		req.AppendHeader(h.header)
+	}
 }
 
 // buildInitialAuth 按变体模式构造初始 Authorization 头。
