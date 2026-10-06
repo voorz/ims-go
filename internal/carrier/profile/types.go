@@ -201,12 +201,13 @@ func mergeCommon(base, override ProfileCommon) ProfileCommon {
 // 流程（对应仓库 README）：
 //  1. selectors/<plmn>.yaml → 匹配 SIM 身份 → bundle path
 //  2. 只下载命中的 profiles/<slug>.yaml
-//  3. 本地缓存优先；云端不可用时用缓存
+//  3. 本地缓存优先；云端不可用时用缓存；主地址失败自动切 CDN
 type Fetcher struct {
-	baseURL  string
-	cacheDir string
-	client   *http.Client
-	log      *slog.Logger
+	baseURL      string
+	fallbackURLs []string
+	cacheDir     string
+	client       *http.Client
+	log          *slog.Logger
 
 	mu       sync.Mutex
 	manifest map[string]*SelectorManifest // plmn → manifest（内存缓存）
