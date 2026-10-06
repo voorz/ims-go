@@ -37,6 +37,13 @@ func New(cfg Config) (*Client, error) {
 		}
 		// 非 stack.Stack 时跳过（消费者自备 SIP 实现时自备 SMS）
 	}
+	// USSD 默认装配（需 SIP 栈）。
+	if cfg.Modules.USSD == nil && cfg.Modules.SIP != nil {
+		ussdMod, err := newDefaultUSSD(cfg, cfg.Modules.SIP)
+		if err == nil {
+			cfg.Modules.USSD = ussdMod
+		}
+	}
 	c := &Client{
 		cfg:      cfg,
 		disp:     newDispatcher(),

@@ -440,6 +440,7 @@ var (
 	ErrNoUSSDModule   = errors.New("ims: USSD 模块未配置")
 	ErrNoVoiceModule  = errors.New("ims: 语音模块未配置")
 	errSMSNoSIP       = errors.New("ims: SMS 需要 SIP 栈（internal）")
+	errUSSDNoSIP      = errors.New("ims: USSD 需要 SIP 栈（internal）")
 )
 
 // ==================== Redaction ====================
