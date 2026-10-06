@@ -40,8 +40,6 @@ type Config struct {
 	AKAProvider sim.AKAProvider
 	// EAPRES：SWu 阶段 EAP-AKA RES（可选）。
 	EAPRES string
-	// SecurityVerify：从 REGISTER 继承的 Security-Server（订阅用）。
-	SecurityVerify string
 	// VoiceHandler：入站 INVITE 的语音处理器（可为 nil）。
 	VoiceHandler inbound.VoiceRequestHandler
 	// OnRegisterState：注册状态变更回调。

@@ -81,17 +81,18 @@ func New(cfg Config) (*Stack, error) {
 	})
 
 	// 6. Subscriber（SUBSCRIBE reg）
+	// SecurityVerify 不在此时设置：REGISTER 成功后经 SetSecurityVerify 继承
+	//（从 200 OK 的 Security-Server 提取）。
 	s.subscriber = subscribe.New(subscribe.Config{
-		IMPU:           cfg.IMPU,
-		Event:          "reg",
-		Expires:        cfg.SubscribeExpires,
-		SecurityVerify: cfg.SecurityVerify,
-		PCSCFAddr:      cfg.PCSCFAddrs[0],
-		Contact:        cfg.Contact,
-		Client:         s.client,
-		Server:         s.server,
-		OnStateChange:  cfg.OnSubscribeState,
-		Logger:         cfg.Logger,
+		IMPU:          cfg.IMPU,
+		Event:         "reg",
+		Expires:       cfg.SubscribeExpires,
+		PCSCFAddr:     cfg.PCSCFAddrs[0],
+		Contact:       cfg.Contact,
+		Client:        s.client,
+		Server:        s.server,
+		OnStateChange: cfg.OnSubscribeState,
+		Logger:        cfg.Logger,
 	})
 
 	// 7. Keepalive（OPTIONS）

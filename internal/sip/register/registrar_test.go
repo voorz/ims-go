@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/emiago/sipgo"
+	"github.com/emiago/sipgo/sip"
 
 	"github.com/voorz/ims-go/internal/sim"
 )
@@ -315,4 +316,24 @@ func TestPCSCFFailover(t *testing.T) {
 	if d.Selected != good.addr() {
 		t.Errorf("Selected = %q，期望 %q", d.Selected, good.addr())
 	}
+}
+
+func TestOnRegisteredCapturesSecurityServer(t *testing.T) {
+	r := New(Config{Expires: 600})
+	// 构造带 Security-Server 的 200 OK
+	res := sip.NewResponse(200, "OK")
+	res.AppendHeader(sip.NewHeader("Security-Server", "ipsec-3gpp;alg=hmac-md5-32;ealg=aes-cbc;prot=esp;mod=trans"))
+	res.AppendHeader(sip.NewHeader("Contact", "<sip:alice@192.168.1.2>;pub-gruu=\"sip:alice@example.com;gr=123\""))
+
+	if err := r.onRegistered(res); err != nil {
+		t.Fatalf("onRegistered: %v", err)
+	}
+	reg := r.Registration()
+	if reg == nil {
+		t.Fatalf("Registration 应非空")
+	}
+	if reg.SecurityServer != "ipsec-3gpp;alg=hmac-md5-32;ealg=aes-cbc;prot=esp;mod=trans" {
+		t.Fatalf("SecurityServer 未捕获: %q", reg.SecurityServer)
+	}
+	r.stopRefresh()
 }

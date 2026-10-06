@@ -201,3 +201,34 @@ func TestParseMWI(t *testing.T) {
 		t.Errorf("Account = %q", mwi.Account)
 	}
 }
+
+func TestSecurityVerifyInheritance(t *testing.T) {
+	ua, _ := sipgo.NewUA()
+	client, _ := sipgo.NewClient(ua)
+	server, _ := sipgo.NewServer(ua)
+	defer ua.Close()
+
+	s := New(Config{
+		IMPU:      "sip:alice@example.com",
+		Event:     "reg",
+		PCSCFAddr: "127.0.0.1:5060",
+		Contact:   "sip:alice@192.168.1.2",
+		Client:    client,
+		Server:    server,
+	})
+	// 初始无 Security-Verify
+	req := s.buildSubscribe(3600)
+	if h := req.GetHeader("Security-Verify"); h != nil {
+		t.Fatalf("初始不应有 Security-Verify")
+	}
+	// 继承后应有
+	s.SetSecurityVerify("ipsec-3gpp;alg=hmac-md5-32;ealg=aes-cbc")
+	req = s.buildSubscribe(3600)
+	h := req.GetHeader("Security-Verify")
+	if h == nil {
+		t.Fatalf("继承后应有 Security-Verify")
+	}
+	if h.Value() != "ipsec-3gpp;alg=hmac-md5-32;ealg=aes-cbc" {
+		t.Fatalf("Security-Verify 值不匹配: %q", h.Value())
+	}
+}
