@@ -157,6 +157,8 @@ func (c *Client) Start(ctx context.Context) error {
 	c.ctx = cctx
 	c.cancel = cancel
 	c.startedAt = time.Now()
+	c.generation++ // 新生命周期，旧代数的 setRuntimeStage 更新直接丢弃
+	c.runtimeState = RuntimeState{Generation: c.generation, UpdatedAt: time.Now()}
 	c.mu.Unlock()
 
 	slots := c.slots()
@@ -195,6 +197,9 @@ func (c *Client) Stop() error {
 	}
 	c.wg.Wait()
 
+	c.mu.Lock()
+	c.generation++ // 递增代数，使旧流程的 setRuntimeStage 更新失效（对标 vowifi-core）
+	c.mu.Unlock()
 	c.state.Store(int32(lcStopped))
 	c.disp.publish(Event{Type: EventClientStopped, Reason: "客户端已停止"})
 	c.disp.shutdown()
@@ -295,6 +300,34 @@ func (c *Client) Status() Status {
 		st.Modules = append(st.Modules, ModuleStatus{Name: s.name, Running: c.modState[s.name]})
 	}
 	return st
+}
+
+// State 返回运行时功能就绪状态快照（对标 vowifi-core State/Obs）。
+// 与 Status 的区别：Status 回答"进程活着吗"，State 回答"业务通了吗"。
+func (c *Client) State() RuntimeState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.runtimeState
+}
+
+// setRuntimeStage 更新运行时阶段状态（对标 vowifi-core setStageForGeneration）。
+// update 回调用于设置 6 布尔值及细节字段。generation 不匹配时返回 false（防过期）。
+// 注意：事件发布在 Phase 2 接入，此处只更新状态。
+func (c *Client) setRuntimeStage(generation uint64, stage, label string, update func(*RuntimeState)) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation != c.generation {
+		return false // 过期代数的更新直接丢弃（对标 vowifi-core Generation 防过期）
+	}
+	c.runtimeState.Stage = stage
+	c.runtimeState.StageLabel = label
+	c.runtimeState.StageStartedAt = time.Now()
+	c.runtimeState.Generation = generation
+	if update != nil {
+		update(&c.runtimeState)
+	}
+	c.runtimeState.UpdatedAt = time.Now()
+	return true
 }
 
 // OnEvent 订阅事件（H5：单一事件通道），返回取消订阅函数。

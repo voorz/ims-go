@@ -408,6 +408,9 @@ type Client struct {
 	modState  map[string]bool
 	decisions []DecisionRecord
 	identity  *identity.Identity // A4：PrepareStart 产出的身份，可空
+	// 运行时功能就绪状态（对标 vowifi-core State），mu 保护
+	runtimeState RuntimeState
+	generation   uint64
 }
 
 // ==================== Status / Event / Decision ====================
@@ -429,11 +432,52 @@ type ModuleStatus struct {
 }
 
 // Status：客户端状态快照（强类型，H7）。
+// 注意：Status 回答"进程活着吗"；RuntimeState 回答"业务通了吗"。两者维度不同。
 type Status struct {
 	State     ClientState
 	StartedAt time.Time
 	Modules   []ModuleStatus
 }
+
+// RuntimeState：VoWiFi 运行时功能就绪状态（对标 vowifi-core State）。
+// 6 个布尔值为双向语义（可 true→false），如隧道断开时 TunnelReady 变 false。
+// 由 Client 内部维护，调用方通过 Client.State() 查询，通过事件订阅实时变更。
+type RuntimeState struct {
+	// 6 步就绪（双向）
+	SIMReady    bool
+	AccessReady bool
+	TunnelReady bool
+	IMSReady    bool
+	SMSReady    bool
+	CallReady   bool
+	// 阶段进度（机器可读 + 人类可读）
+	Stage          string
+	StageLabel     string
+	StageStartedAt time.Time
+	// 防过期代数（Client.Stop 时递增，旧流程的更新直接丢弃）
+	Generation uint64
+	// IMS REGISTER 细节
+	RegisterVariantIndex int
+	RegisterVariantTotal int
+	RegisterRound        int
+	LastSIPStatus        int
+	LastSIPReason        string
+	// 错误上下文（二分约定：成功清错误，失败保现场）
+	LastErrorClass string
+	LastError      string
+	LastReason     string
+	UpdatedAt      time.Time
+}
+
+// Stage 常量：对标 vowifi-core 实际使用的 5 个阶段。
+const (
+	StageEPDGDNS     = "epdg_dns"
+	StageTunnelReady = "tunnel_ready"
+	StageIMSReady    = "ims_ready"
+	StageCallReady   = "call_ready"
+	StageSMSReady    = "sms_ready"
+	StageFailed      = "failed"
+)
 
 // EventType：事件类型。WS-5/WS-8/WS-11 等追加注册/短信/呼叫相关类型。
 type EventType string
