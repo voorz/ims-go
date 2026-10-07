@@ -367,19 +367,17 @@ func (s *Session) buildIKEAuthInitPayloads() ([]ikev2.Payload, error) {
 	tsi, tsr := buildTrafficSelectorsForIPStack(nil)
 	cp := s.buildCPRequestPayload()
 
-	// CP (request inner address) and RFC 5998 EAP-only authentication.
-	eapOnly := &ikev2.EncryptedPayloadNotify{
-		ProtocolID: ikev2.ProtoIKE, NotifyType: ikev2.NotifyTypeEAPOnlyAuthentication,
-	}
+	// CP (request inner address).
+	// 注意：不发送 N(EAP_ONLY_AUTHENTICATION)，部分 ePDG 不支持 RFC 5998 会直接返回 AUTHENTICATION_FAILED。
+	// 对标 swu-go（vowifi-core 在用的实现）的注释。
 	mobike := &ikev2.EncryptedPayloadNotify{NotifyType: ikev2.MOBIKE_SUPPORTED}
 	ticket := &ikev2.EncryptedPayloadNotify{NotifyType: ikev2.TICKET_REQUEST}
-	s.eapOnlyRequested = true
 
 	payloads := []ikev2.Payload{idi, idr, cp, sa2}
 	if childKE != nil {
 		payloads = append(payloads, childKE)
 	}
-	payloads = append(payloads, tsi, tsr, eapOnly, mobike, ticket)
+	payloads = append(payloads, tsi, tsr, mobike, ticket)
 	payloads = append(payloads, s.initialContactNotify()...)
 	devicePayloads, err := s.deviceIdentityPayloads()
 	if err != nil {
