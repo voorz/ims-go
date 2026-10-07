@@ -247,6 +247,7 @@ func (s *Session) runIKEAuthLoop(ctx context.Context) error {
 			case "eap":
 				// Continue the EAP exchange.
 			case "final":
+				slog.Info("swu: EAP 成功，进入 final 阶段，准备发送 AUTH")
 				s.reportProgress(progressEstablishingIPSec)
 				s.stage = stageFinal
 			case "done":
@@ -256,18 +257,24 @@ func (s *Session) runIKEAuthLoop(ctx context.Context) error {
 			}
 		case stageFinal:
 			// Send the final IKE_AUTH request with AUTH after EAP success.
+			slog.Info("swu: 正在构建 final IKE_AUTH (AUTH payload)")
 			payloads, err := s.buildIKEAuthFinalPayloads()
 			if err != nil {
+				slog.Warn("swu: 构建 final IKE_AUTH 失败", "err", err)
 				return err
 			}
+			slog.Info("swu: 发送 final IKE_AUTH 请求", "payloads", len(payloads))
 			if err := s.sendIKEAuthRequest(payloads); err != nil {
+				slog.Warn("swu: 发送 final IKE_AUTH 失败", "err", err)
 				return err
 			}
 			s.stage = stageDone
 		case stageDone:
 			// Wait for the final IKE_AUTH response (AUTH, SA, TS).
+			slog.Info("swu: 等待 final IKE_AUTH 响应")
 			resp, err := s.receiveIKE(ctx)
 			if err != nil {
+				slog.Warn("swu: 接收 final IKE_AUTH 响应失败", "err", err)
 				return err
 			}
 			raw, err := resp.Encode()
