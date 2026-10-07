@@ -8,6 +8,9 @@ import (
 
 	"github.com/voorz/ims-go/internal/carrier"
 	"github.com/voorz/ims-go/internal/identity"
+	"github.com/voorz/ims-go/internal/sip/register"
+	"github.com/voorz/ims-go/internal/sip/stack"
+	"github.com/voorz/ims-go/internal/swu"
 )
 
 // New 构造客户端：填充默认值 → 一次集中校验（D-007）→ PrepareStart（A4）→ 默认模块装配。
@@ -102,7 +105,135 @@ func New(cfg Config) (*Client, error) {
 		identity: ident,
 	}
 	c.state.Store(int32(lcStopped))
+	c.wireObservability() // Phase 2：接线隧道/SIP 状态回调到 RuntimeState
 	return c, nil
+}
+
+// wireObservability 接线模块状态到 RuntimeState（Phase 2）。
+// 在 New() 后调用，此时模块已装配但未启动。
+func (c *Client) wireObservability() {
+	// SIP 注册状态 → IMSReady
+	if st, ok := c.cfg.Modules.SIP.(*stack.Stack); ok {
+		if reg := st.Registrar(); reg != nil {
+			reg.SetOnStateChange(func(from, to register.State) {
+				c.onRegisterStateChange(from, to)
+			})
+		}
+	}
+	// 隧道事件订阅在 Start() 中启动（需要 ctx 和 generation）
+}
+
+// onRegisterStateChange 处理 SIP 注册状态变更，更新 RuntimeState。
+func (c *Client) onRegisterStateChange(from, to register.State) {
+	c.mu.Lock()
+	gen := c.generation
+	hasSMS := c.cfg.Modules.SMS != nil
+	hasVoice := c.cfg.Modules.Voice != nil
+	c.mu.Unlock()
+
+	switch to {
+	case register.StateRegistered:
+		if c.setRuntimeStage(gen, StageIMSReady, "IMS 注册成功", func(rs *RuntimeState) {
+			rs.IMSReady = true
+			rs.LastErrorClass = ""
+			rs.LastError = ""
+			rs.LastReason = ""
+			// IMS 就绪后，SMS/Voice 模块即可工作（对标 vowifi-core 的 attach/agent 装配点）
+			if hasSMS {
+				rs.SMSReady = true
+			}
+			if hasVoice {
+				rs.CallReady = true
+			}
+		}) {
+			c.disp.publish(Event{Type: EventRegistered, Reason: "IMS 注册成功"})
+			if hasSMS {
+				c.disp.publish(Event{Type: EventSMSReady, Reason: "短信就绪"})
+			}
+			if hasVoice {
+				c.disp.publish(Event{Type: EventCallReady, Reason: "语音就绪"})
+			}
+			c.publishStateChanged()
+		}
+	case register.StateFailed:
+		if c.setRuntimeStage(gen, StageFailed, "IMS 注册失败", func(rs *RuntimeState) {
+			rs.IMSReady = false
+			rs.LastErrorClass = "register"
+			rs.LastReason = "register_failed"
+		}) {
+			c.disp.publish(Event{Type: EventRegistrationFailed, Reason: "IMS 注册失败"})
+			c.publishStateChanged()
+		}
+	case register.StateUnregistered:
+		// 注销或隧道断开导致：IMS 就绪回落（双向语义）
+		c.mu.Lock()
+		curStage := c.runtimeState.Stage
+		curLabel := c.runtimeState.StageLabel
+		c.mu.Unlock()
+		if c.setRuntimeStage(gen, curStage, curLabel, func(rs *RuntimeState) {
+			rs.IMSReady = false
+			rs.SMSReady = false
+			rs.CallReady = false
+		}) {
+			c.publishStateChanged()
+		}
+	}
+}
+
+// publishStateChanged 发布通用的状态变更事件（Data 为 RuntimeState 快照）。
+func (c *Client) publishStateChanged() {
+	c.disp.publish(Event{Type: EventStateChanged, Data: c.State(), Reason: "运行时状态变更"})
+}
+
+// 隧道状态字符串（对标 internal/swu/session.go 的 state* 常量）。
+const (
+	tunnelStateConnecting  = "connecting"
+	tunnelStateEstablished = "established"
+	tunnelStateError       = "error"
+	tunnelStateShutdown    = "shutdown"
+)
+
+// watchTunnel 监听隧道状态事件，更新 RuntimeState（Phase 2）。
+// 在 Client.Start() 中启动，ctx 取消或隧道事件通道关闭时退出。
+func (c *Client) watchTunnel(t *swu.Tunnel, gen uint64, ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-t.Events():
+			if !ok {
+				return
+			}
+			switch ev.State {
+			case tunnelStateConnecting:
+				// 传输已创建：Access 就绪（对标 vowifi-core AccessReady）
+				if c.setRuntimeStage(gen, StageEPDGDNS, "正在建立隧道", func(rs *RuntimeState) {
+					rs.AccessReady = true
+				}) {
+					c.publishStateChanged()
+				}
+			case tunnelStateEstablished:
+				if c.setRuntimeStage(gen, StageTunnelReady, "隧道已建立", func(rs *RuntimeState) {
+					rs.TunnelReady = true
+					rs.AccessReady = true
+				}) {
+					c.disp.publish(Event{Type: EventTunnelUp, Reason: "隧道已建立"})
+					c.publishStateChanged()
+				}
+			case tunnelStateError, tunnelStateShutdown:
+				// 隧道断开：双向回落（Tunnel/IMS 置 false）
+				if c.setRuntimeStage(gen, StageFailed, "隧道断开", func(rs *RuntimeState) {
+					rs.TunnelReady = false
+					rs.IMSReady = false
+					rs.LastErrorClass = "tunnel"
+					rs.LastReason = "tunnel_down"
+				}) {
+					c.disp.publish(Event{Type: EventTunnelDown, Reason: "隧道断开: " + ev.State})
+					c.publishStateChanged()
+				}
+			}
+		}
+	}
 }
 
 // applyCarrierConfig 将内部运营商解析结果回填到公开 Config。
@@ -158,8 +289,18 @@ func (c *Client) Start(ctx context.Context) error {
 	c.cancel = cancel
 	c.startedAt = time.Now()
 	c.generation++ // 新生命周期，旧代数的 setRuntimeStage 更新直接丢弃
-	c.runtimeState = RuntimeState{Generation: c.generation, UpdatedAt: time.Now()}
+	c.runtimeState = RuntimeState{
+		Generation: c.generation,
+		UpdatedAt:  time.Now(),
+		SIMReady:   c.identity != nil, // 用户语义：卡可读则 SIM 一直就绪
+	}
+	gen := c.generation
 	c.mu.Unlock()
+
+	// 启动隧道事件监听（Phase 2）
+	if t, ok := c.cfg.Modules.Tunnel.(*swu.Tunnel); ok {
+		go c.watchTunnel(t, gen, cctx)
+	}
 
 	slots := c.slots()
 	slog.Info("ims: 客户端启动", "modules", len(slots))

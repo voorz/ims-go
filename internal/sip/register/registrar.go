@@ -42,6 +42,13 @@ func (r *Registrar) State() State {
 	return r.state
 }
 
+// SetOnStateChange 设置状态变更回调（线程安全，可在 Start 前调用）。
+func (r *Registrar) SetOnStateChange(fn func(from, to State)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg.OnStateChange = fn
+}
+
 // Registration 返回当前注册信息；未注册时为 nil。
 func (r *Registrar) Registration() *Registration {
 	r.mu.RLock()

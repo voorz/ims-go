@@ -494,6 +494,13 @@ const (
 	EventSMSSent            EventType = "sms.sent"
 	EventLocalNumberLearned EventType = "identity.local_number_learned"
 	EventRegistrationFailed EventType = "register.failed"
+	// 运行时状态事件（Phase 2 可观测性）：状态变更时发布。
+	EventTunnelUp     EventType = "tunnel.up"
+	EventTunnelDown   EventType = "tunnel.down"
+	EventRegistered   EventType = "register.succeeded"
+	EventSMSReady     EventType = "sms.ready"
+	EventCallReady    EventType = "call.ready"
+	EventStateChanged EventType = "state.changed" // 通用：RuntimeState 变更，Data 为 RuntimeState 快照
 )
 
 // SMSReceivedData：EventSMSReceived 的 Data 负载。
