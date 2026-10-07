@@ -29,10 +29,18 @@ func (s *Session) handleEAP(data []byte) ([]ikev2.Payload, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse EAP: %w", err)
 	}
+	// 协议级日志：EAP 收包（诊断隧道建立卡住问题）
+	slog.Info("swu: 收到 EAP 包",
+		"code", packet.Code,
+		"identifier", packet.Identifier,
+		"type", packet.Type,
+		"subtype", packet.Subtype,
+		"len", len(data))
 	switch packet.Code {
 	case eapaka.CodeRequest:
 		return s.handleRFCEAPRequest(packet, data)
 	case eapaka.CodeSuccess:
+		slog.Info("swu: 收到 EAP-Success，EAP 鉴权通过")
 		if len(s.eapKeys.MSK) == 0 {
 			return nil, errors.New("swu: EAP success without derived MSK")
 		}
@@ -43,6 +51,7 @@ func (s *Session) handleEAP(data []byte) ([]ikev2.Payload, error) {
 		s.stage = stageFinal
 		return nil, nil
 	case eapaka.CodeFailure:
+		slog.Warn("swu: 收到 EAP-Failure，EAP 鉴权被拒绝")
 		return nil, errors.New("swu: EAP authentication failed")
 	default:
 		return nil, fmt.Errorf("swu: unexpected EAP code %d", packet.Code)
@@ -210,6 +219,11 @@ func (s *Session) handleRFCChallenge(packet eapaka.Packet) ([]ikev2.Payload, err
 	if err := s.captureFastReauthentication(packet, keys); err != nil {
 		return nil, err
 	}
+	// 协议级日志：EAP-Response 发送（诊断用）
+	slog.Info("swu: 发送 EAP-Response/AKA-Challenge",
+		"identifier", packet.Identifier,
+		"has_res", len(aka.RES) > 0,
+		"result_indicated", s.eapResultIndicated)
 	return eapResponsePayload(response)
 }
 

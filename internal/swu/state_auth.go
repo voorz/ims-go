@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 
@@ -233,12 +234,15 @@ func (s *Session) runIKEAuthLoop(ctx context.Context) error {
 			// Wait for the IKE_AUTH response (EAP request or final).
 			resp, err := s.receiveIKE(ctx)
 			if err != nil {
+				slog.Warn("swu: IKE_AUTH EAP 阶段接收超时或失败", "err", err)
 				return err
 			}
 			decision, err := s.executeIKEAuthDecision(resp)
 			if err != nil {
+				slog.Warn("swu: IKE_AUTH EAP 决策失败", "err", err)
 				return err
 			}
+			slog.Info("swu: IKE_AUTH EAP 决策", "decision", decision)
 			switch decision {
 			case "eap":
 				// Continue the EAP exchange.
