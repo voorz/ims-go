@@ -220,8 +220,10 @@ func (s *Session) handleRFCChallenge(packet eapaka.Packet) ([]ikev2.Payload, err
 		return nil, err
 	}
 	// 协议级日志：EAP-Response 发送（诊断用）
+	// 对比原作者日志的 identity: "0234336575943654@nai.epc.mnc033.mcc234.3gppnetwork.org"
 	slog.Info("swu: 发送 EAP-Response/AKA-Challenge",
 		"identifier", packet.Identifier,
+		"identity", s.currentEAPIdentityForKeyDerivation(),
 		"has_res", len(aka.RES) > 0,
 		"result_indicated", s.eapResultIndicated)
 	return eapResponsePayload(response)
