@@ -551,6 +551,13 @@ func (s *Session) buildIKEAuthFinalPayloads() ([]ikev2.Payload, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 详细日志：AUTH payload 内容（对标原作者的详细程度）
+	slog.Info("swu: final AUTH payload 详情",
+		"auth_method", auth.AuthMethod,
+		"auth_data_hex", fmt.Sprintf("%x", auth.AuthData),
+		"auth_data_len", len(auth.AuthData),
+		"msk_len", len(s.eapKeys.MSK),
+		"ike_identity", s.currentIKEIdentity())
 	return []ikev2.Payload{auth}, nil
 }
 
